@@ -2,9 +2,10 @@
 
 import { createClient } from '@supabase/supabase-js'
 
+// Initialize Supabase client using Service Role Key for Admin operations
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
 interface NewAthleteData {
@@ -20,15 +21,16 @@ interface NewAthleteData {
 
 export async function createAthleteAction(data: NewAthleteData) {
   try {
-    // 1. Create the Auth User (Accepts ANY valid personal email format)
-    const { data: authData, error: authError } = await supabaseAdmin.auth.signUp({
-      email: data.email.trim().toLowerCase(),
+    const cleanEmail = data.email.trim().toLowerCase()
+
+    // 1. Create the Auth User directly via Admin API (Bypasses verification & domain checks)
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: cleanEmail,
       password: data.password,
-      options: {
-        data: {
-          first_name: data.firstName,
-          last_name: data.lastName,
-        }
+      email_confirm: true, // Automatically confirms the athlete's email
+      user_metadata: {
+        first_name: data.firstName,
+        last_name: data.lastName,
       }
     })
 
@@ -37,7 +39,7 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     const userId = authData.user.id
 
-    // 2. Insert or Update Profile details (Explicit field names)
+    // 2. Insert or Update Profile details
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert({
