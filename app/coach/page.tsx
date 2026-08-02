@@ -220,7 +220,7 @@ export default function CoachDashboard() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="athlete@gvn.com"
+                  placeholder="athlete@gmail.com"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
                 />
               </div>
