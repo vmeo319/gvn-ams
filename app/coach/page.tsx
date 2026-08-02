@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { createAthleteAction } from './actions'
 
@@ -72,59 +73,65 @@ export default function CoachDashboard() {
       setFormError(result.error || 'Failed to create athlete')
       setFormLoading(false)
     } else {
-      // Reset form and close modal
       setEmail('')
       setPassword('')
       setFirstName('')
       setLastName('')
       setIsModalOpen(false)
       setFormLoading(false)
-      fetchLeaderboard() // Refresh table
+      fetchLeaderboard()
     }
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-8">
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-8">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 border-b border-slate-800 pb-4 gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">GVN PERFORMANCE</h1>
-          <p className="text-slate-400 text-sm">365-Day Coach Summary Leaderboard</p>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 border-b border-red-950/40 pb-4 gap-4">
+        <div className="flex items-center gap-4">
+          <div className="relative w-12 h-12">
+            <Image src="/gvn-logo-wolf.png" alt="GVN" fill className="object-contain" />
+          </div>
+          <div>
+            <div className="relative w-40 h-8">
+              <Image src="/gvn-logo-letters.png" alt="GVN Performance" fill className="object-contain object-left" />
+            </div>
+            <p className="text-slate-400 text-xs tracking-wider uppercase font-medium">365-Day Coach Leaderboard</p>
+          </div>
         </div>
         
         <div className="flex items-center gap-3">
           <button
             onClick={() => setIsModalOpen(true)}
-            className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-xs transition shadow-lg shadow-cyan-500/20"
+            className="bg-red-600 hover:bg-red-500 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition shadow-lg shadow-red-950/50 uppercase tracking-wider"
           >
             + Add New Athlete
           </button>
-          <div className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl text-xs font-semibold text-slate-400">
-            COACH ACCESS
+          <div className="bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl text-xs font-semibold text-red-500 uppercase">
+            Coach Access
           </div>
         </div>
       </div>
 
       {/* Main Table */}
       {loading ? (
-        <div className="text-slate-400">Loading athlete metrics from Supabase...</div>
+        <div className="text-slate-400">Loading metrics...</div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/50 backdrop-blur shadow-2xl">
+        <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur shadow-2xl">
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-800/80 text-slate-400 uppercase text-xs tracking-wider border-b border-slate-700">
+            <thead className="bg-slate-900 text-slate-400 uppercase text-xs tracking-wider border-b border-slate-800">
               <tr>
                 <th className="py-4 px-4">Athlete</th>
                 <th className="py-4 px-4">Info</th>
                 <th className="py-4 px-4">Ht / Wt</th>
-                <th className="py-4 px-4">ISO Rel Peak Force</th>
+                <th className="py-4 px-4 text-red-400">ISO Rel Force</th>
                 <th className="py-4 px-4">V0 (m/s)</th>
                 <th className="py-4 px-4">Top Speed</th>
                 <th className="py-4 px-4">Max Jump</th>
-                <th className="py-4 px-4">Workout Level</th>
-                <th className="py-4 px-4">Sprint Level</th>
+                <th className="py-4 px-4">Workout Tier</th>
+                <th className="py-4 px-4">Sprint Tier</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800 font-medium">
+            <tbody className="divide-y divide-slate-800/80 font-medium">
               {data.map((athlete) => (
                 <tr key={athlete.athlete_id} className="hover:bg-slate-800/40 transition">
                   <td className="py-4 px-4 font-bold text-white">
@@ -136,7 +143,7 @@ export default function CoachDashboard() {
                   <td className="py-4 px-4 text-slate-300">
                     {athlete.height_inches}" / {athlete.weight_lbs} lbs
                   </td>
-                  <td className="py-4 px-4 text-cyan-400 font-semibold">
+                  <td className="py-4 px-4 text-red-400 font-bold">
                     {athlete.iso_relative_peak_force_n_kg || '-'} N/kg
                   </td>
                   <td className="py-4 px-4 text-slate-200">{athlete.v0 || '-'}</td>
@@ -144,9 +151,9 @@ export default function CoachDashboard() {
                   <td className="py-4 px-4 text-slate-200">{athlete.max_jump_height ? `${athlete.max_jump_height}"` : '-'}</td>
                   
                   <td className="py-4 px-4">
-                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
+                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-extrabold ${
                       athlete.workout_level === 'Level 3' 
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' 
+                        ? 'bg-red-500/10 text-red-400 border border-red-500/30' 
                         : 'bg-slate-800 text-slate-400'
                     }`}>
                       {athlete.workout_level || 'Level 1+2'}
@@ -154,9 +161,9 @@ export default function CoachDashboard() {
                   </td>
 
                   <td className="py-4 px-4">
-                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
+                    <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-extrabold ${
                       athlete.sprint_level === 'Level 2' 
-                        ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/30' 
+                        ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' 
                         : 'bg-slate-800 text-slate-400'
                     }`}>
                       {athlete.sprint_level || 'Level 1'}
@@ -169,18 +176,13 @@ export default function CoachDashboard() {
         </div>
       )}
 
-      {/* Add Athlete Modal */}
+      {/* Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-red-900/30 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <div className="flex justify-between items-center border-b border-slate-800 pb-3">
               <h3 className="text-lg font-bold text-white">Add New GVN Athlete</h3>
-              <button 
-                onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white text-sm"
-              >
-                ✕
-              </button>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
             </div>
 
             {formError && (
@@ -198,7 +200,7 @@ export default function CoachDashboard() {
                     required
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-3 py-2 text-xs text-white"
                   />
                 </div>
                 <div>
@@ -208,32 +210,32 @@ export default function CoachDashboard() {
                     required
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-3 py-2 text-xs text-white"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Athlete Email</label>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Personal Email</label>
                 <input
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="athlete@gmail.com"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-3 py-2 text-xs text-white"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1">Temporary Password</label>
+                <label className="block text-xs font-semibold text-slate-400 mb-1">Password</label>
                 <input
                   type="password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-3 py-2 text-xs text-white"
                 />
               </div>
 
@@ -293,9 +295,9 @@ export default function CoachDashboard() {
                 <button
                   type="submit"
                   disabled={formLoading}
-                  className="w-1/2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition disabled:opacity-50"
+                  className="w-1/2 bg-red-600 hover:bg-red-500 text-white font-bold py-2.5 rounded-xl text-xs transition disabled:opacity-50 uppercase tracking-wider"
                 >
-                  {formLoading ? 'Creating...' : 'Save Athlete'}
+                  {formLoading ? 'Saving...' : 'Save Athlete'}
                 </button>
               </div>
             </form>

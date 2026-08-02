@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 
 export default function Login() {
@@ -16,7 +17,6 @@ export default function Login() {
     setLoading(true)
     setErrorMsg('')
 
-    // 1. Authenticate with Supabase
     const { data: { user }, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -29,14 +29,12 @@ export default function Login() {
     }
 
     if (user) {
-      // 2. Fetch user's role from profiles
       const { data: profile } = await supabase
         .from('profiles')
         .select('role')
         .eq('id', user.id)
         .single()
 
-      // 3. Route accordingly
       if (profile?.role === 'coach' || profile?.role === 'admin') {
         router.push('/coach')
       } else {
@@ -47,52 +45,72 @@ export default function Login() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-6">
-        <div className="text-center space-y-2">
-          <div className="inline-block bg-cyan-500/10 border border-cyan-500/20 px-3 py-1 rounded-full text-xs font-semibold text-cyan-400 uppercase tracking-widest">
-            GVN Performance
+      <div className="max-w-md w-full bg-slate-900 border border-red-900/30 rounded-3xl p-8 shadow-2xl shadow-red-950/40 space-y-6">
+        
+        {/* GVN Branding Header */}
+        <div className="flex flex-col items-center text-center space-y-3">
+          <div className="relative w-24 h-24 mb-1">
+            <Image
+              src="/gvn-logo-wolf.png"
+              alt="GVN Wolf Logo"
+              fill
+              className="object-contain"
+              priority
+            />
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight">AMS PORTAL</h1>
-          <p className="text-slate-400 text-xs">Sign in to access your athlete dashboard</p>
+          
+          <div className="relative w-48 h-10">
+            <Image
+              src="/gvn-logo-letters.png"
+              alt="GVN Performance"
+              fill
+              className="object-contain"
+              priority
+            />
+          </div>
+
+          <p className="text-slate-400 text-xs tracking-wider uppercase pt-1">
+            Athlete Management System
+          </p>
         </div>
 
         {errorMsg && (
-          <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3 rounded-lg text-center font-medium">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-3 rounded-xl text-center font-medium">
             {errorMsg}
           </div>
         )}
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Email</label>
+            <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Email</label>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="athlete@gvn.com"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500 transition"
+              placeholder="athlete@gmail.com"
+              className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase text-slate-400 mb-1">Password</label>
+            <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Password</label>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500 transition"
+              className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
             />
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold py-3.5 rounded-xl transition shadow-lg shadow-cyan-500/20 text-sm mt-2 disabled:opacity-50"
+            className="w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-900/30 text-sm mt-2 disabled:opacity-50 uppercase tracking-wider"
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Signing In...' : 'Sign In'}
           </button>
         </form>
       </div>
