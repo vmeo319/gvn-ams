@@ -2,7 +2,6 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-// Initialize a elevated Supabase client for admin operations
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -21,9 +20,9 @@ interface NewAthleteData {
 
 export async function createAthleteAction(data: NewAthleteData) {
   try {
-    // 1. Create the Auth User in Supabase
+    // 1. Create the Auth User (Accepts ANY valid personal email format)
     const { data: authData, error: authError } = await supabaseAdmin.auth.signUp({
-      email: data.email,
+      email: data.email.trim().toLowerCase(),
       password: data.password,
       options: {
         data: {
@@ -38,7 +37,7 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     const userId = authData.user.id
 
-    // 2. Insert or Update their Profile details
+    // 2. Insert or Update Profile details (Explicit field names)
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert({
@@ -50,7 +49,7 @@ export async function createAthleteAction(data: NewAthleteData) {
         height_inches: data.heightInches,
         weight_lbs: data.weightLbs,
         role: 'athlete'
-      })
+      }, { onConflict: 'id' })
 
     if (profileError) return { success: false, error: profileError.message }
 
