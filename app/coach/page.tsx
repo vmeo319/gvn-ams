@@ -87,6 +87,25 @@ const NICKNAME_MAP: Record<string, string[]> = {
   connor: ['conner', 'connor'],
 }
 
+// Converts Excel serial date numbers or ISO strings to YYYY-MM-DD
+const formatExcelDate = (val: any): string => {
+  if (typeof val === 'number') {
+    const dateObj = new Date(Math.round((val - 25569) * 86400 * 1000))
+    return dateObj.toISOString().split('T')[0]
+  }
+  if (!val) return new Date().toISOString().split('T')[0]
+  const str = String(val).trim()
+  if (!isNaN(Number(str)) && Number(str) > 30000) {
+    const dateObj = new Date(Math.round((Number(str) - 25569) * 86400 * 1000))
+    return dateObj.toISOString().split('T')[0]
+  }
+  const parsed = new Date(str)
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toISOString().split('T')[0]
+  }
+  return str.split('T')[0].split(' ')[0]
+}
+
 export default function CoachDashboard() {
   const [data, setData] = useState<LeaderboardRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -315,15 +334,15 @@ export default function CoachDashboard() {
             )
           )
 
-          // Normalized Date Search
-          const rawDate = String(
+          // Extract and format Excel Date Number -> YYYY-MM-DD string
+          const rawDate =
             normalizedRow['sessiontime'] ||
             normalizedRow['settime'] ||
             normalizedRow['reptime'] ||
             normalizedRow['date'] ||
-            normalizedRow['created'] ||
-            new Date().toISOString().split('T')[0]
-          )
+            normalizedRow['created']
+
+          const dateStr = formatExcelDate(rawDate)
 
           if (speedMps <= 0) return
 
@@ -332,7 +351,6 @@ export default function CoachDashboard() {
 
           if (!isV0 && !is10Yd) return
 
-          const dateStr = rawDate.split('T')[0].split(' ')[0]
           const sessionKey = `${matchedProfileId}_${dateStr}_${isV0 ? 'v0' : '10yd'}`
 
           if (!athleteSessions[sessionKey]) {
@@ -401,14 +419,12 @@ export default function CoachDashboard() {
         if (metricsToInsert.length > 0) {
           setTen80Logs((prev) => [...prev, `Inserting ${metricsToInsert.length} session summaries to database...`])
 
-          // Try UPSERT first, fallback to INSERT if no unique constraint exists
           let dbError: any = null
           const { error: upsertErr } = await supabase
             .from('performance_metrics')
             .upsert(metricsToInsert, { onConflict: 'athlete_id, test_date' })
 
           if (upsertErr) {
-            // Fallback to standard insert
             const { error: insertErr } = await supabase
               .from('performance_metrics')
               .insert(metricsToInsert)
