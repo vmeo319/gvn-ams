@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap } from 'lucide-react'
 import * as XLSX from 'xlsx'
@@ -100,7 +100,7 @@ export default function CoachDashboard() {
     }
   }
 
-  // Dedicated 1080 Export Processor
+  // Flexible 1080 Export Processor
   const handle1080FileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -116,7 +116,7 @@ export default function CoachDashboard() {
         const wb = XLSX.read(buffer, { type: 'binary' })
         const wsname = wb.SheetNames[0]
         const ws = wb.Sheets[wsname]
-        const rawData: any[] = XLSX.utils.sheet_to_json(ws)
+        const rawData = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws)
 
         if (!rawData || rawData.length === 0) {
           setTen80Status({ success: false, msg: 'File is empty or unreadable.' })
@@ -136,12 +136,17 @@ export default function CoachDashboard() {
         const profileMap = new Map<string, string>()
         profiles?.forEach((p) => {
           if (p.first_name && p.last_name) {
-            const key = `${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase()
-            profileMap.set(key, p.id)
+            const first = p.first_name.trim().toLowerCase()
+            const last = p.last_name.trim().toLowerCase()
+
+            // Map "first last" AND "last first"
+            profileMap.set(`${first} ${last}`, p.id)
+            profileMap.set(`${last} ${first}`, p.id)
+            profileMap.set(`${first}${last}`, p.id)
           }
         })
 
-        setTen80Logs((prev) => [...prev, `Found ${profileMap.size} active profiles in database.`])
+        setTen80Logs((prev) => [...prev, `Loaded ${profiles?.length || 0} athlete profiles for matching.`])
 
         const athleteSessions: Record<
           string,
@@ -150,29 +155,46 @@ export default function CoachDashboard() {
 
         const MPS_TO_MPH = 2.23694
         let totalMatchedReps = 0
+        const sampleUnmatchedNames: string[] = []
 
         rawData.forEach((row) => {
-          // Check all possible name header variations
           const rawName =
-            row['Client'] ||
-            row['User Name'] ||
-            row['Name'] ||
-            row['Athlete'] ||
-            row['Client Name'] ||
+            (row['Client'] as string) ||
+            (row['User Name'] as string) ||
+            (row['Name'] as string) ||
+            (row['Athlete'] as string) ||
+            (row['Client Name'] as string) ||
             ''
 
           if (!rawName) return
 
-          let cleanName = String(rawName).trim()
-          if (cleanName.includes(',')) {
-            const parts = cleanName.split(',')
-            cleanName = `${parts[1].trim()} ${parts[0].trim()}`.toLowerCase()
-          } else {
-            cleanName = cleanName.toLowerCase()
+          // Clean punctuation and normalize spacing
+          const cleanName = String(rawName)
+            .replace(/,/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase()
+
+          // Try direct map lookup
+          let matchedProfileId = profileMap.get(cleanName) || profileMap.get(cleanName.replace(/\s+/g, ''))
+
+          // Fallback: Partial name search
+          if (!matchedProfileId && profiles) {
+            const found = profiles.find((p) => {
+              if (!p.first_name || !p.last_name) return false
+              const f = p.first_name.trim().toLowerCase()
+              const l = p.last_name.trim().toLowerCase()
+              return cleanName.includes(f) && cleanName.includes(l)
+            })
+            if (found) matchedProfileId = found.id
           }
 
-          const matchedProfileId = profileMap.get(cleanName)
-          if (!matchedProfileId) return
+          if (!matchedProfileId) {
+            if (sampleUnmatchedNames.length < 3 && !sampleUnmatchedNames.includes(cleanName)) {
+              sampleUnmatchedNames.push(cleanName)
+            }
+            return
+          }
 
           const exName = String(
             row['Exercise'] ||
@@ -182,32 +204,37 @@ export default function CoachDashboard() {
           ).toLowerCase()
 
           const loadKg = parseFloat(
-            row['Concentric load (kg)'] ||
-              row['Load (kg)'] ||
-              row['Load'] ||
-              row['External load (kg)'] ||
-              '2.0'
+            String(
+              row['Concentric load (kg)'] ||
+                row['Load (kg)'] ||
+                row['Load'] ||
+                row['External load (kg)'] ||
+                '2.0'
+            )
           )
 
           const speedMps = parseFloat(
-            row['Speed peak (m/s)'] ||
-              row['Peak Speed (m/s)'] ||
-              row['Speed max (m/s)'] ||
-              row['Top Speed (m/s)'] ||
-              row['Speed'] ||
-              '0'
+            String(
+              row['Speed peak (m/s)'] ||
+                row['Peak Speed (m/s)'] ||
+                row['Speed max (m/s)'] ||
+                row['Top Speed (m/s)'] ||
+                row['Speed'] ||
+                '0'
+            )
           )
 
           const rawDate =
-            row['Date'] ||
-            row['Created'] ||
-            row['Session Date'] ||
+            (row['Date'] as string) ||
+            (row['Created'] as string) ||
+            (row['Session Date'] as string) ||
             new Date().toISOString().split('T')[0]
 
           if (speedMps <= 0) return
 
-          const isV0 = exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
-          const is10Yd = exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
+          // Flexible Exercise Matching
+          const isV0 = exName.includes('sprint') || exName.includes('profiling') || exName.includes('v0')
+          const is10Yd = exName.includes('10yd') || exName.includes('10 yard')
 
           if (!isV0 && !is10Yd) return
 
@@ -228,13 +255,19 @@ export default function CoachDashboard() {
           totalMatchedReps++
         })
 
+        if (sampleUnmatchedNames.length > 0) {
+          setTen80Logs((prev) => [
+            ...prev,
+            `Sample unmatched names in 1080 file: "${sampleUnmatchedNames.join('", "')}"`,
+          ])
+        }
+
         setTen80Logs((prev) => [
           ...prev,
-          `Matched ${totalMatchedReps} rep entries across ${Object.keys(athleteSessions).length} unique sprint sessions.`,
+          `Matched ${totalMatchedReps} reps across ${Object.keys(athleteSessions).length} unique sprint sessions.`,
         ])
 
-        // Calculate V0 linear regression and convert to mph
-        const metricsToInsert: any[] = []
+        const metricsToInsert: { athlete_id: string; test_date: string; v0_speed: number | null; top_speed: number | null }[] = []
 
         Object.values(athleteSessions).forEach((session) => {
           let maxSpeedMps = Math.max(...session.reps.map((r) => r.speed))
@@ -285,11 +318,12 @@ export default function CoachDashboard() {
         } else {
           setTen80Status({
             success: false,
-            msg: '0 records imported. Make sure athlete names in the 1080 file match athlete names in GVN profiles.',
+            msg: '0 records imported. Check the diagnostic console below for sample unmatched athlete names.',
           })
         }
-      } catch (err: any) {
-        setTen80Status({ success: false, msg: `Parsing error: ${err.message}` })
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        setTen80Status({ success: false, msg: `Parsing error: ${errorMsg}` })
       } finally {
         setTen80Uploading(false)
       }
@@ -332,8 +366,9 @@ export default function CoachDashboard() {
           })
           fetchLeaderboard()
         }
-      } catch (err: any) {
-        setUploadStatus({ success: false, msg: `Parsing error: ${err.message}` })
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        setUploadStatus({ success: false, msg: `Parsing error: ${errorMsg}` })
       } finally {
         setUploading(false)
       }
@@ -381,7 +416,6 @@ export default function CoachDashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* NEW 1080 DEDICATED BUTTON */}
             <button
               onClick={() => {
                 setTen80Status(null)
