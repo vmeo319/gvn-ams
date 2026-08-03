@@ -22,6 +22,72 @@ interface LeaderboardRecord {
   sprint_level: string
 }
 
+// Common Nickname Map for Athlete Matching
+const NICKNAME_MAP: Record<string, string[]> = {
+  ken: ['kenneth', 'kenny', 'ken'],
+  kenny: ['kenneth', 'ken', 'kenny'],
+  kenneth: ['kenny', 'ken', 'kenneth'],
+  nick: ['nicholas', 'nick', 'nicky', 'nico'],
+  nicholas: ['nick', 'nicky', 'nicholas', 'nico'],
+  josh: ['joshua', 'josh'],
+  joshua: ['josh', 'joshua'],
+  mikey: ['michael', 'mike', 'mikey'],
+  mike: ['michael', 'mike', 'mikey'],
+  michael: ['mikey', 'mike', 'michael'],
+  robby: ['robert', 'rob', 'bob', 'robby'],
+  robert: ['robby', 'rob', 'bob', 'robert'],
+  joe: ['joseph', 'joe', 'joey'],
+  joey: ['joseph', 'joe', 'joey'],
+  joseph: ['joe', 'joey', 'joseph'],
+  tom: ['thomas', 'tom', 'tommy'],
+  tommy: ['thomas', 'tom', 'tommy'],
+  thomas: ['tom', 'tommy', 'thomas'],
+  jimmy: ['james', 'jim', 'jimmy'],
+  jim: ['james', 'jimmy', 'jim'],
+  james: ['jimmy', 'jim', 'james'],
+  alex: ['alexander', 'alex', 'alec'],
+  alexander: ['alex', 'alec', 'alexander'],
+  cam: ['cameron', 'cam'],
+  cameron: ['cam', 'cameron'],
+  chris: ['christopher', 'chris'],
+  christopher: ['chris', 'christopher'],
+  matt: ['matthew', 'matt'],
+  matthew: ['matt', 'matthew'],
+  dan: ['daniel', 'danny', 'dan'],
+  danny: ['daniel', 'dan', 'danny'],
+  daniel: ['dan', 'danny', 'daniel'],
+  dave: ['david', 'dave'],
+  david: ['dave', 'david'],
+  will: ['william', 'will', 'bill', 'billy'],
+  william: ['will', 'bill', 'billy', 'william'],
+  ben: ['benjamin', 'ben', 'benny'],
+  benjamin: ['ben', 'benny', 'benjamin'],
+  zach: ['zachary', 'zach', 'zack'],
+  zack: ['zachary', 'zach', 'zack'],
+  zachary: ['zach', 'zack', 'zachary'],
+  dom: ['dominic', 'dominick', 'dom'],
+  dominic: ['dom', 'dominic'],
+  dominick: ['dom', 'dominick'],
+  nate: ['nathan', 'nathaniel', 'nate'],
+  nathan: ['nate', 'nathan'],
+  nathaniel: ['nate', 'nathaniel'],
+  jake: ['jacob', 'jake'],
+  jacob: ['jake', 'jacob'],
+  sam: ['samuel', 'sam', 'sammy'],
+  samuel: ['sam', 'sammy', 'samuel'],
+  gabe: ['gabriel', 'gabe'],
+  gabriel: ['gabe', 'gabriel'],
+  drew: ['andrew', 'drew', 'andy'],
+  andrew: ['drew', 'andy', 'andrew'],
+  luke: ['lucas', 'luke', 'lukie'],
+  lukie: ['luke', 'lucas', 'lukie'],
+  lucas: ['luke', 'lukie', 'lucas'],
+  aj: ['a.j.', 'aj', 'anthony'],
+  'a.j.': ['aj', 'a.j.', 'anthony'],
+  conner: ['connor', 'conner'],
+  connor: ['conner', 'connor'],
+}
+
 export default function CoachDashboard() {
   const [data, setData] = useState<LeaderboardRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -100,7 +166,7 @@ export default function CoachDashboard() {
     }
   }
 
-  // Flexible 1080 Export Processor
+  // Smart 1080 Export Processor
   const handle1080FileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -133,19 +199,6 @@ export default function CoachDashboard() {
 
         if (pErr) throw new Error(`Profiles fetch failed: ${pErr.message}`)
 
-        const profileMap = new Map<string, string>()
-        profiles?.forEach((p) => {
-          if (p.first_name && p.last_name) {
-            const first = p.first_name.trim().toLowerCase()
-            const last = p.last_name.trim().toLowerCase()
-
-            // Map "first last" AND "last first"
-            profileMap.set(`${first} ${last}`, p.id)
-            profileMap.set(`${last} ${first}`, p.id)
-            profileMap.set(`${first}${last}`, p.id)
-          }
-        })
-
         setTen80Logs((prev) => [...prev, `Loaded ${profiles?.length || 0} athlete profiles for matching.`])
 
         const athleteSessions: Record<
@@ -155,7 +208,7 @@ export default function CoachDashboard() {
 
         const MPS_TO_MPH = 2.23694
         let totalMatchedReps = 0
-        const sampleUnmatchedNames: string[] = []
+        const unmatchedNameSet = new Set<string>()
 
         rawData.forEach((row) => {
           const rawName =
@@ -169,30 +222,70 @@ export default function CoachDashboard() {
           if (!rawName) return
 
           // Clean punctuation and normalize spacing
-          const cleanName = String(rawName)
-            .replace(/,/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .toLowerCase()
+          const cleanRaw = String(rawName).replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+          const parts = cleanRaw.split(' ')
+          
+          let rowFirst = ''
+          let rowLast = ''
+          if (parts.length >= 2) {
+            rowFirst = parts[0]
+            rowLast = parts[parts.length - 1]
+          } else {
+            rowFirst = cleanRaw
+            rowLast = cleanRaw
+          }
 
-          // Try direct map lookup
-          let matchedProfileId = profileMap.get(cleanName) || profileMap.get(cleanName.replace(/\s+/g, ''))
+          // SMART PROFILE MATCHING
+          let matchedProfileId: string | null = null
 
-          // Fallback: Partial name search
-          if (!matchedProfileId && profiles) {
-            const found = profiles.find((p) => {
-              if (!p.first_name || !p.last_name) return false
-              const f = p.first_name.trim().toLowerCase()
-              const l = p.last_name.trim().toLowerCase()
-              return cleanName.includes(f) && cleanName.includes(l)
-            })
-            if (found) matchedProfileId = found.id
+          if (profiles) {
+            // 1. Exact Full Name or Swapped Name Match
+            for (const p of profiles) {
+              if (!p.first_name || !p.last_name) continue
+              const pf = p.first_name.trim().toLowerCase()
+              const pl = p.last_name.trim().toLowerCase()
+
+              if (
+                cleanRaw === `${pf} ${pl}` ||
+                cleanRaw === `${pl} ${pf}` ||
+                (rowFirst === pf && rowLast === pl) ||
+                (rowFirst === pl && rowLast === pf)
+              ) {
+                matchedProfileId = p.id
+                break
+              }
+            }
+
+            // 2. Nickname / Prefix Match on First Name + Exact Last Name Match
+            if (!matchedProfileId) {
+              for (const p of profiles) {
+                if (!p.first_name || !p.last_name) continue
+                const pf = p.first_name.trim().toLowerCase()
+                const pl = p.last_name.trim().toLowerCase()
+
+                const sameLast = rowLast === pl || rowFirst === pl || cleanRaw.includes(pl)
+                if (!sameLast) continue
+
+                // Check prefix (e.g. Josh vs Joshua, Ken vs Kenneth)
+                const isPrefix = pf.startsWith(rowFirst) || rowFirst.startsWith(pf)
+                
+                // Check nickname table (e.g. Kenny -> Kenneth)
+                const nickList = NICKNAME_MAP[rowFirst] || []
+                const isNick = nickList.includes(pf)
+
+                // First letter match fallback if last name is unique
+                const firstLetterMatch = pf[0] === rowFirst[0]
+
+                if (isPrefix || isNick || firstLetterMatch) {
+                  matchedProfileId = p.id
+                  break
+                }
+              }
+            }
           }
 
           if (!matchedProfileId) {
-            if (sampleUnmatchedNames.length < 3 && !sampleUnmatchedNames.includes(cleanName)) {
-              sampleUnmatchedNames.push(cleanName)
-            }
+            unmatchedNameSet.add(String(rawName).trim())
             return
           }
 
@@ -232,7 +325,7 @@ export default function CoachDashboard() {
 
           if (speedMps <= 0) return
 
-          // Flexible Exercise Matching
+          // Exercise Matching
           const isV0 = exName.includes('sprint') || exName.includes('profiling') || exName.includes('v0')
           const is10Yd = exName.includes('10yd') || exName.includes('10 yard')
 
@@ -255,10 +348,11 @@ export default function CoachDashboard() {
           totalMatchedReps++
         })
 
-        if (sampleUnmatchedNames.length > 0) {
+        if (unmatchedNameSet.size > 0) {
+          const unmatchedList = Array.from(unmatchedNameSet)
           setTen80Logs((prev) => [
             ...prev,
-            `Sample unmatched names in 1080 file: "${sampleUnmatchedNames.join('", "')}"`,
+            `Unmatched names in 1080 file (${unmatchedList.length}): "${unmatchedList.slice(0, 5).join('", "')}"${unmatchedList.length > 5 ? '...' : ''}`,
           ])
         }
 
