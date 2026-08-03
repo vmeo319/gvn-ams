@@ -30,7 +30,7 @@ export default function CoachDashboard() {
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
-  
+
   // Add Athlete Form State
   const [formData, setFormData] = useState({
     firstName: '',
@@ -94,19 +94,19 @@ export default function CoachDashboard() {
     }
   }
 
-  // Handle Excel File Parsing & Processing (Standard + 1080 Motion Auto-Detect)
+  // Handle Excel File Parsing & Processing
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
     setUploading(true)
-    setUploadStatus({ msg: 'Parsing file contents...' })
+    setUploadStatus({ msg: 'Reading file contents...' })
 
     const reader = new FileReader()
     reader.onload = async (evt) => {
       try {
-        const bstr = evt.target?.result
-        const wb = XLSX.read(bstr, { type: 'binary' })
+        const dataBuffer = evt.target?.result
+        const wb = XLSX.read(dataBuffer, { type: 'binary' })
         const wsname = wb.SheetNames[0]
         const ws = wb.Sheets[wsname]
         const rawData: any[] = XLSX.utils.sheet_to_json(ws)
@@ -117,58 +117,121 @@ export default function CoachDashboard() {
           return
         }
 
-        // AUTO-DETECT 1080 MOTION FILE FORMAT
-        const sampleRow = rawData[0] || {}
-        const is1080Format = 'User Name' in sampleRow || 'Load (kg)' in sampleRow || 'Peak Speed (m/s)' in sampleRow
+        // AUTO-DETECT 1080 MOTION EXPORT FORMAT
+        const sample = rawData[0] || {}
+        const is1080Format =
+          'Client' in sample ||
+          'User Name' in sample ||
+          'Concentric load (kg)' in sample ||
+          'Speed peak (m/s)' in sample ||
+          'Peak Speed (m/s)' in sample
 
         if (is1080Format) {
-          setUploadStatus({ msg: 'Detected 1080 Motion Export. Processing $V_0$ regressions...' })
+          setUploadStatus({ msg: 'Detected 1080 Motion Export! Matching athletes and computing V0...' })
 
-          // Fetch profiles for matching
-          const { data: profiles } = await supabase.from('profiles').select('id, first_name, last_name')
+          // 1. Fetch Supabase profiles
+          const { data: profiles, error: pErr } = await supabase
+            .from('profiles')
+            .select('id, first_name, last_name')
+
+          if (pErr) throw new Error(`Profiles fetch failed: ${pErr.message}`)
+
           const profileMap = new Map<string, string>()
-
           profiles?.forEach((p) => {
             if (p.first_name && p.last_name) {
-              profileMap.set(`${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase(), p.id)
+              const fullKey = `${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase()
+              profileMap.set(fullKey, p.id)
             }
           })
 
-          const athleteSessions: Record<string, { athleteId: string; date: string; isV0: boolean; is10Yd: boolean; reps: { load: number; speed: number }[] }> = {}
+          const athleteSessions: Record<
+            string,
+            { athleteId: string; date: string; isV0: boolean; is10Yd: boolean; reps: { load: number; speed: number }[] }
+          > = {}
           const MPS_TO_MPH = 2.23694
+          let matchedRows = 0
 
+          // 2. Parse 1080 Export Rows
           rawData.forEach((row) => {
-            const rawName = row['User Name'] || row['Client'] || row['Name'] || row['Athlete'] || ''
-            const exName = (row['Exercise Name'] || row['Exercise'] || '').toLowerCase()
-            const loadKg = parseFloat(row['Load (kg)'] || row['Load'] || row['External Load'] || '2.0')
-            const speedMps = parseFloat(row['Peak Speed (m/s)'] || row['Peak Speed'] || row['Top Speed'] || '0')
-            const rawDate = row['Date'] || row['Created'] || new Date().toISOString().split('T')[0]
+            let rawName =
+              row['Client'] ||
+              row['User Name'] ||
+              row['Name'] ||
+              row['Athlete'] ||
+              row['Client Name'] ||
+              ''
 
-            const cleanName = rawName.trim().toLowerCase()
+            if (!rawName) return
+
+            // Standardize "Last, First" or "First Last" format
+            let cleanName = String(rawName).trim()
+            if (cleanName.includes(',')) {
+              const parts = cleanName.split(',')
+              cleanName = `${parts[1].trim()} ${parts[0].trim()}`.toLowerCase()
+            } else {
+              cleanName = cleanName.toLowerCase()
+            }
+
             const matchedProfileId = profileMap.get(cleanName)
+            if (!matchedProfileId) return
 
-            if (!matchedProfileId || speedMps <= 0) return
+            const exName = (
+              row['Exercise'] ||
+              row['Exercise Name'] ||
+              row['ExerciseTypeName'] ||
+              ''
+            ).toLowerCase()
 
-            const isV0 = exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
-            const is10Yd = exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
+            const loadKg = parseFloat(
+              row['Concentric load (kg)'] ||
+                row['Load (kg)'] ||
+                row['Load'] ||
+                row['External load (kg)'] ||
+                '2.0'
+            )
+
+            const speedMps = parseFloat(
+              row['Speed peak (m/s)'] ||
+                row['Peak Speed (m/s)'] ||
+                row['Speed max (m/s)'] ||
+                row['Top Speed (m/s)'] ||
+                row['Speed'] ||
+                '0'
+            )
+
+            const rawDate =
+              row['Date'] ||
+              row['Created'] ||
+              row['Session Date'] ||
+              new Date().toISOString().split('T')[0]
+
+            if (speedMps <= 0) return
+
+            const isV0 =
+              exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
+            const is10Yd =
+              exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
 
             if (!isV0 && !is10Yd) return
 
-            const sessionKey = `${matchedProfileId}_${rawDate}_${isV0 ? 'v0' : '10yd'}`
+            const dateStr = String(rawDate).split('T')[0].split(' ')[0]
+            const sessionKey = `${matchedProfileId}_${dateStr}_${isV0 ? 'v0' : '10yd'}`
 
             if (!athleteSessions[sessionKey]) {
               athleteSessions[sessionKey] = {
                 athleteId: matchedProfileId,
-                date: String(rawDate).split('T')[0],
+                date: dateStr,
                 isV0,
                 is10Yd,
-                reps: []
+                reps: [],
               }
+              matchedRows++
             }
 
             athleteSessions[sessionKey].reps.push({ load: loadKg, speed: speedMps })
           })
 
+          // 3. Compute V0 Linear Regression and convert m/s -> mph
           const metricsToInsert: any[] = []
 
           Object.values(athleteSessions).forEach((session) => {
@@ -177,7 +240,10 @@ export default function CoachDashboard() {
 
             if (session.isV0 && session.reps.length >= 2) {
               const n = session.reps.length
-              let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
+              let sumX = 0,
+                sumY = 0,
+                sumXY = 0,
+                sumXX = 0
 
               session.reps.forEach((pt) => {
                 sumX += pt.load
@@ -201,7 +267,7 @@ export default function CoachDashboard() {
               athlete_id: session.athleteId,
               test_date: session.date,
               v0_speed: session.isV0 ? calculatedV0Mph : null,
-              top_speed: session.is10Yd ? maxSpeedMph : null
+              top_speed: session.is10Yd ? maxSpeedMph : null,
             })
           })
 
@@ -214,13 +280,13 @@ export default function CoachDashboard() {
 
             setUploadStatus({
               success: true,
-              msg: `Successfully parsed 1080 Motion file and imported ${metricsToInsert.length} sprint record(s)!`
+              msg: `Successfully imported 1080 Sprint data! Updated ${metricsToInsert.length} sprint session records (V0 calculated in mph).`,
             })
             fetchLeaderboard()
           } else {
             setUploadStatus({
               success: false,
-              msg: '1080 file parsed, but no matching athlete names or sprint exercises were found.'
+              msg: `Found 1080 data, but 0 athletes matched your database roster. Ensure athlete names in 1080 match first and last names in GVN profiles.`,
             })
           }
           return
@@ -234,7 +300,7 @@ export default function CoachDashboard() {
           setUploadStatus({
             success: true,
             msg: `Successfully imported ${res.insertedCount} record(s)!`,
-            errors: res.errors
+            errors: res.errors,
           })
           fetchLeaderboard()
         }
@@ -260,7 +326,7 @@ export default function CoachDashboard() {
         'Broad Jump (in)': 114,
         'Bench Velo (m/s)': 1.25,
         'Chin-ups': 18,
-        'Weight (lbs)': 195
+        'Weight (lbs)': 195,
       },
       {
         'First Name': 'Jack',
@@ -272,8 +338,8 @@ export default function CoachDashboard() {
         'Broad Jump (in)': 108,
         'Bench Velo (m/s)': 1.10,
         'Chin-ups': 15,
-        'Weight (lbs)': 205
-      }
+        'Weight (lbs)': 205,
+      },
     ]
 
     const worksheet = XLSX.utils.json_to_sheet(templateData)
@@ -383,20 +449,24 @@ export default function CoachDashboard() {
                         {a.max_jump ? `${a.max_jump}"` : '-'}
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                          a.workout_level === 'Level 3'
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                        }`}>
+                        <span
+                          className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                            a.workout_level === 'Level 3'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                          }`}
+                        >
                           {a.workout_level}
                         </span>
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                          a.sprint_level === 'Level 2'
-                            ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                            : 'bg-slate-700/40 text-slate-400 border border-slate-700/50'
-                        }`}>
+                        <span
+                          className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                            a.sprint_level === 'Level 2'
+                              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                              : 'bg-slate-700/40 text-slate-400 border border-slate-700/50'
+                          }`}
+                        >
                           {a.sprint_level}
                         </span>
                       </td>
@@ -556,13 +626,15 @@ export default function CoachDashboard() {
 
               {/* Status Notifications */}
               {uploadStatus && (
-                <div className={`p-4 rounded-xl border text-xs space-y-2 ${
-                  uploadStatus.success === true
-                    ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
-                    : uploadStatus.success === false
-                    ? 'bg-red-950/40 border-red-800 text-red-300'
-                    : 'bg-slate-800 border-slate-700 text-slate-300'
-                }`}>
+                <div
+                  className={`p-4 rounded-xl border text-xs space-y-2 ${
+                    uploadStatus.success === true
+                      ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+                      : uploadStatus.success === false
+                      ? 'bg-red-950/40 border-red-800 text-red-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                  }`}
+                >
                   <div className="flex items-center space-x-2 font-medium">
                     {uploadStatus.success === true ? (
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -598,7 +670,9 @@ export default function CoachDashboard() {
                     <p className="text-sm font-semibold text-slate-200">
                       {uploading ? 'Processing file...' : 'Click or drag file to upload'}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">Auto-detects 1080 Sprint exports or standard templates (.xlsx, .xls, .csv)</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Auto-detects 1080 Sprint exports or standard templates (.xlsx, .xls, .csv)
+                    </p>
                   </div>
                 </div>
               </div>
