@@ -210,14 +210,13 @@ export default function CoachDashboard() {
         const unmatchedNameSet = new Set<string>()
 
         rawData.forEach((row) => {
-          // Normalize row keys (lowercased & stripped of non-alphanumeric chars)
+          // Normalize row keys
           const normalizedRow: Record<string, any> = {}
           Object.keys(row).forEach((k) => {
             const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '')
             normalizedRow[cleanKey] = row[k]
           })
 
-          // Extract metrics using normalized header search
           const rawName = String(
             normalizedRow['client'] ||
             normalizedRow['username'] ||
@@ -304,7 +303,7 @@ export default function CoachDashboard() {
             )
           )
 
-          // Normalized Peak Speed Search (catches 'topspeed', 'speedpeakms', etc.)
+          // Normalized Peak Speed Search
           const speedMps = parseFloat(
             String(
               normalizedRow['topspeed'] ||
@@ -400,11 +399,29 @@ export default function CoachDashboard() {
         })
 
         if (metricsToInsert.length > 0) {
-          const { error: insertErr } = await supabase
+          setTen80Logs((prev) => [...prev, `Inserting ${metricsToInsert.length} session summaries to database...`])
+
+          // Try UPSERT first, fallback to INSERT if no unique constraint exists
+          let dbError: any = null
+          const { error: upsertErr } = await supabase
             .from('performance_metrics')
             .upsert(metricsToInsert, { onConflict: 'athlete_id, test_date' })
 
-          if (insertErr) throw insertErr
+          if (upsertErr) {
+            // Fallback to standard insert
+            const { error: insertErr } = await supabase
+              .from('performance_metrics')
+              .insert(metricsToInsert)
+
+            if (insertErr) {
+              dbError = insertErr
+            }
+          }
+
+          if (dbError) {
+            const errStr = dbError?.message || dbError?.details || dbError?.hint || JSON.stringify(dbError)
+            throw new Error(`Database save failed: ${errStr}`)
+          }
 
           setTen80Status({
             success: true,
@@ -418,7 +435,16 @@ export default function CoachDashboard() {
           })
         }
       } catch (err: unknown) {
-        const errorMsg = err instanceof Error ? err.message : String(err)
+        let errorMsg = 'Unknown error occurred'
+        if (err instanceof Error) {
+          errorMsg = err.message
+        } else if (typeof err === 'object' && err !== null) {
+          const e = err as any
+          errorMsg = e.message || e.details || e.error_description || JSON.stringify(err)
+        } else {
+          errorMsg = String(err)
+        }
+
         setTen80Status({ success: false, msg: `Parsing error: ${errorMsg}` })
       } finally {
         setTen80Uploading(false)
