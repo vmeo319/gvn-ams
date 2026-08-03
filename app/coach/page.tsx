@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { createAthleteAction, uploadMetricRows } from './actions'
 
@@ -20,6 +20,7 @@ interface LeaderboardRecord {
   max_jump: number | null
   workout_level: string
   sprint_level: string
+  location?: string | null
 }
 
 const NICKNAME_MAP: Record<string, string[]> = {
@@ -110,6 +111,7 @@ export default function CoachDashboard() {
   const [data, setData] = useState<LeaderboardRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [selectedLocation, setSelectedLocation] = useState('All')
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -334,7 +336,7 @@ export default function CoachDashboard() {
             )
           )
 
-          // Extract and format Excel Date Number -> YYYY-MM-DD string
+          // Format Excel Date -> YYYY-MM-DD string
           const rawDate =
             normalizedRow['sessiontime'] ||
             normalizedRow['settime'] ||
@@ -537,9 +539,19 @@ export default function CoachDashboard() {
     XLSX.writeFile(workbook, 'GVN_Metrics_Upload_Template.xlsx')
   }
 
-  const filteredData = data.filter((a) =>
-    `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
+  // Extract unique locations dynamically for the filter dropdown
+  const locationsList = Array.from(
+    new Set(data.map((a) => a.location).filter((loc): loc is string => Boolean(loc)))
   )
+
+  // Filter Data by Search Term AND Selected Location
+  const filteredData = data.filter((a) => {
+    const nameMatch = `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
+    const locationMatch =
+      selectedLocation === 'All' ||
+      (a.location && a.location.toLowerCase() === selectedLocation.toLowerCase())
+    return nameMatch && locationMatch
+  })
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10">
@@ -590,16 +602,44 @@ export default function CoachDashboard() {
           </div>
         </div>
 
-        {/* Search */}
-        <div className="relative max-w-md">
-          <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
-          <input
-            type="text"
-            placeholder="Search athletes..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500 transition"
-          />
+        {/* Filters Bar: Search + GVN Location Filter */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+          {/* Search */}
+          <div className="relative max-w-md w-full">
+            <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+            <input
+              type="text"
+              placeholder="Search athletes..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500 transition"
+            />
+          </div>
+
+          {/* GVN Location Filter Dropdown */}
+          <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 self-start sm:self-auto">
+            <MapPin className="w-4 h-4 text-red-500" />
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Location:</span>
+            <select
+              value={selectedLocation}
+              onChange={(e) => setSelectedLocation(e.target.value)}
+              className="bg-transparent text-sm font-semibold text-white focus:outline-none cursor-pointer pr-2"
+            >
+              <option value="All" className="bg-slate-900 text-white">All Locations</option>
+              {locationsList.map((loc) => (
+                <option key={loc} value={loc} className="bg-slate-900 text-white">
+                  {loc}
+                </option>
+              ))}
+              {/* Fallback standard locations if database location column is newly populated */}
+              {!locationsList.includes('GVN Chicago') && (
+                <option value="GVN Chicago" className="bg-slate-900 text-white">GVN Chicago</option>
+              )}
+              {!locationsList.includes('GVN North Shore') && (
+                <option value="GVN North Shore" className="bg-slate-900 text-white">GVN North Shore</option>
+              )}
+            </select>
+          </div>
         </div>
 
         {/* Leaderboard Table */}
@@ -632,48 +672,59 @@ export default function CoachDashboard() {
                     </td>
                   </tr>
                 ) : (
-                  filteredData.map((a) => (
-                    <tr key={a.athlete_id} className="hover:bg-slate-800/40 transition">
-                      <td className="py-4 px-6 font-semibold text-white">
-                        {a.first_name} {a.last_name}
-                      </td>
-                      <td className="py-4 px-4 text-slate-400">{a.position}</td>
-                      <td className="py-4 px-4 text-slate-400">
-                        {a.height_inches ? `${a.height_inches}"` : '-'} / {a.weight_lbs ? `${a.weight_lbs} lbs` : '-'}
-                      </td>
-                      <td className="py-4 px-4 font-medium text-slate-200">
-                        {a.iso_rel_peak_force ? `${a.iso_rel_peak_force} N/kg` : '-'}
-                      </td>
-                      <td className="py-4 px-4 font-medium text-slate-200">
-                        {a.v0_speed ? `${a.v0_speed} mph` : '-'}
-                      </td>
-                      <td className="py-4 px-4 font-medium text-slate-200">
-                        {a.max_jump ? `${a.max_jump}"` : '-'}
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <span
-                          className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                            a.workout_level === 'Level 3'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                          }`}
-                        >
-                          {a.workout_level}
-                        </span>
-                      </td>
-                      <td className="py-4 px-4 text-center">
-                        <span
-                          className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                            a.sprint_level === 'Level 2'
-                              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                              : 'bg-slate-700/40 text-slate-400 border border-slate-700/50'
-                          }`}
-                        >
-                          {a.sprint_level}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
+                  filteredData.map((a) => {
+                    // DYNAMIC SPRINT LEVEL CALCULATION (>= 17.50 mph required for Level 2)
+                    const isSprintLevel2 = a.v0_speed !== null && a.v0_speed >= 17.50
+                    const sprintLevelLabel = isSprintLevel2 ? 'Level 2' : 'Level 1'
+
+                    return (
+                      <tr key={a.athlete_id} className="hover:bg-slate-800/40 transition">
+                        <td className="py-4 px-6 font-semibold text-white">
+                          {a.first_name} {a.last_name}
+                          {a.location && (
+                            <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
+                              {a.location}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-4 px-4 text-slate-400">{a.position}</td>
+                        <td className="py-4 px-4 text-slate-400">
+                          {a.height_inches ? `${a.height_inches}"` : '-'} / {a.weight_lbs ? `${a.weight_lbs} lbs` : '-'}
+                        </td>
+                        <td className="py-4 px-4 font-medium text-slate-200">
+                          {a.iso_rel_peak_force ? `${a.iso_rel_peak_force} N/kg` : '-'}
+                        </td>
+                        <td className="py-4 px-4 font-medium text-slate-200">
+                          {a.v0_speed ? `${a.v0_speed} mph` : '-'}
+                        </td>
+                        <td className="py-4 px-4 font-medium text-slate-200">
+                          {a.max_jump ? `${a.max_jump}"` : '-'}
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <span
+                            className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                              a.workout_level === 'Level 3'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            }`}
+                          >
+                            {a.workout_level}
+                          </span>
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <span
+                            className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                              isSprintLevel2
+                                ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                : 'bg-slate-800/80 text-slate-400 border border-slate-700/60'
+                            }`}
+                          >
+                            {sprintLevelLabel}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })
                 )}
               </tbody>
             </table>
