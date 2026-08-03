@@ -94,7 +94,7 @@ export default function CoachDashboard() {
     }
   }
 
-  // Handle Excel File Parsing & Processing
+  // Handle Excel File Parsing & Processing (Standard + 1080 Motion Auto-Detect)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -109,7 +109,7 @@ export default function CoachDashboard() {
         const wb = XLSX.read(bstr, { type: 'binary' })
         const wsname = wb.SheetNames[0]
         const ws = wb.Sheets[wsname]
-        const rawData = XLSX.utils.sheet_to_json(ws)
+        const rawData: any[] = XLSX.utils.sheet_to_json(ws)
 
         if (!rawData || rawData.length === 0) {
           setUploadStatus({ success: false, msg: 'Excel sheet appears to be empty.' })
@@ -117,8 +117,117 @@ export default function CoachDashboard() {
           return
         }
 
-        setUploadStatus({ msg: `Uploading ${rawData.length} entries to Supabase...` })
+        // AUTO-DETECT 1080 MOTION FILE FORMAT
+        const sampleRow = rawData[0] || {}
+        const is1080Format = 'User Name' in sampleRow || 'Load (kg)' in sampleRow || 'Peak Speed (m/s)' in sampleRow
 
+        if (is1080Format) {
+          setUploadStatus({ msg: 'Detected 1080 Motion Export. Processing $V_0$ regressions...' })
+
+          // Fetch profiles for matching
+          const { data: profiles } = await supabase.from('profiles').select('id, first_name, last_name')
+          const profileMap = new Map<string, string>()
+
+          profiles?.forEach((p) => {
+            if (p.first_name && p.last_name) {
+              profileMap.set(`${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase(), p.id)
+            }
+          })
+
+          const athleteSessions: Record<string, { athleteId: string; date: string; isV0: boolean; is10Yd: boolean; reps: { load: number; speed: number }[] }> = {}
+          const MPS_TO_MPH = 2.23694
+
+          rawData.forEach((row) => {
+            const rawName = row['User Name'] || row['Client'] || row['Name'] || row['Athlete'] || ''
+            const exName = (row['Exercise Name'] || row['Exercise'] || '').toLowerCase()
+            const loadKg = parseFloat(row['Load (kg)'] || row['Load'] || row['External Load'] || '2.0')
+            const speedMps = parseFloat(row['Peak Speed (m/s)'] || row['Peak Speed'] || row['Top Speed'] || '0')
+            const rawDate = row['Date'] || row['Created'] || new Date().toISOString().split('T')[0]
+
+            const cleanName = rawName.trim().toLowerCase()
+            const matchedProfileId = profileMap.get(cleanName)
+
+            if (!matchedProfileId || speedMps <= 0) return
+
+            const isV0 = exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
+            const is10Yd = exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
+
+            if (!isV0 && !is10Yd) return
+
+            const sessionKey = `${matchedProfileId}_${rawDate}_${isV0 ? 'v0' : '10yd'}`
+
+            if (!athleteSessions[sessionKey]) {
+              athleteSessions[sessionKey] = {
+                athleteId: matchedProfileId,
+                date: String(rawDate).split('T')[0],
+                isV0,
+                is10Yd,
+                reps: []
+              }
+            }
+
+            athleteSessions[sessionKey].reps.push({ load: loadKg, speed: speedMps })
+          })
+
+          const metricsToInsert: any[] = []
+
+          Object.values(athleteSessions).forEach((session) => {
+            let maxSpeedMps = Math.max(...session.reps.map((r) => r.speed))
+            let calculatedV0Mps = maxSpeedMps
+
+            if (session.isV0 && session.reps.length >= 2) {
+              const n = session.reps.length
+              let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
+
+              session.reps.forEach((pt) => {
+                sumX += pt.load
+                sumY += pt.speed
+                sumXY += pt.load * pt.speed
+                sumXX += pt.load * pt.load
+              })
+
+              const denom = n * sumXX - sumX * sumX
+              if (denom !== 0) {
+                const slope = (n * sumXY - sumX * sumY) / denom
+                const intercept = (sumY - slope * sumX) / n
+                if (intercept > maxSpeedMps) calculatedV0Mps = intercept
+              }
+            }
+
+            const maxSpeedMph = Number((maxSpeedMps * MPS_TO_MPH).toFixed(2))
+            const calculatedV0Mph = Number((calculatedV0Mps * MPS_TO_MPH).toFixed(2))
+
+            metricsToInsert.push({
+              athlete_id: session.athleteId,
+              test_date: session.date,
+              v0_speed: session.isV0 ? calculatedV0Mph : null,
+              top_speed: session.is10Yd ? maxSpeedMph : null
+            })
+          })
+
+          if (metricsToInsert.length > 0) {
+            const { error: insertErr } = await supabase
+              .from('performance_metrics')
+              .upsert(metricsToInsert, { onConflict: 'athlete_id, test_date' })
+
+            if (insertErr) throw insertErr
+
+            setUploadStatus({
+              success: true,
+              msg: `Successfully parsed 1080 Motion file and imported ${metricsToInsert.length} sprint record(s)!`
+            })
+            fetchLeaderboard()
+          } else {
+            setUploadStatus({
+              success: false,
+              msg: '1080 file parsed, but no matching athlete names or sprint exercises were found.'
+            })
+          }
+          return
+        }
+
+        // STANDARD METRICS TEMPLATE UPLOAD
+        setUploadStatus({ msg: `Uploading ${rawData.length} entries to Supabase...` })
         const res = await uploadMetricRows(rawData)
 
         if (res.success) {
@@ -268,7 +377,7 @@ export default function CoachDashboard() {
                         {a.iso_rel_peak_force ? `${a.iso_rel_peak_force} N/kg` : '-'}
                       </td>
                       <td className="py-4 px-4 font-medium text-slate-200">
-                        {a.v0_speed ? `${a.v0_speed} m/s` : '-'}
+                        {a.v0_speed ? `${a.v0_speed} mph` : '-'}
                       </td>
                       <td className="py-4 px-4 font-medium text-slate-200">
                         {a.max_jump ? `${a.max_jump}"` : '-'}
@@ -489,7 +598,7 @@ export default function CoachDashboard() {
                     <p className="text-sm font-semibold text-slate-200">
                       {uploading ? 'Processing file...' : 'Click or drag file to upload'}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">Supports .xlsx, .xls, or .csv formats</p>
+                    <p className="text-xs text-slate-500 mt-1">Auto-detects 1080 Sprint exports or standard templates (.xlsx, .xls, .csv)</p>
                   </div>
                 </div>
               </div>
