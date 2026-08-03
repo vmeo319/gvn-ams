@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { createAthleteAction, uploadMetricRows } from './actions'
 
@@ -22,6 +22,36 @@ interface LeaderboardRecord {
   sprint_level: string
   location?: string | null
 }
+
+const GVN_LOCATIONS = [
+  'GVN- Chicago',
+  'GVN- North Shore',
+  'GVN- Michigan',
+  'GVN- FVIA',
+]
+
+// Official GVN North Shore Roster Array
+const NORTH_SHORE_ROSTER = [
+  'Robby Drazner', 'Emily Brown', 'Lyndie Lobdell', 'Brooke Hobson', 'Max Itigaki',
+  'Will Winemaster', 'Lachlan Getz', 'Dom Rivelli', 'Mike DeAngelo', 'Jack Silich',
+  'Grayden Daul', 'Mikey Burchill', 'David Deputy', 'Ben Motew', 'Tyler Carpenter',
+  'Hugh McGing', 'Nick Nardella', 'Jack Devine', 'Dean Andrews', 'Josh LaChapelle',
+  'Connor Bewick', 'Nolan Shorter', 'Nick Kempf', 'Trevor Shorter', 'Eero Butella',
+  'Charlie Spencer', 'Evan Stasny', 'Charlie Campbell', 'Audrey Hetman', 'Arissa Vettraino',
+  'Abby Sandler', 'Grant Dillard', 'Jack Hextall', 'Ryan Drury', 'Kristian Epperson',
+  'Drew Daley', 'Shea Henriksen', 'Mason Minsky', 'Maclean Cooney', 'Malone Cooney',
+  'Nate Jastrzebski', 'Ryker Lee', 'Chase Jette', 'Nathan Hauad', 'Cole Mckinney',
+  'Oliver Mckinney', 'Nick Knutson', 'Sam Kapotas', 'Jimmy Rieber', 'Andrew Horn',
+  'Thaddeus McMahon', 'Talen Aling', 'Emery Ipsen', 'Travis Lefere', 'Ryan Hecker',
+  'Parker Cha', 'Harry Byers', 'Luke Assi', 'Abe Barnett', 'Josh Zitzman',
+  'Anton Gesink', 'Jackson Romanoff', 'Ronan Freeman', 'Levi Freeman', 'Luca Kummetz',
+  'AJ Haas', 'Will Johnston', 'Alex Milojevic', 'Tyler Cooper', 'Conner Cooper',
+  'Alex Felts', 'Lukie Lincoln', 'Tyler Costescu', 'David Blasiak', 'George Golden',
+  'Dillon Gesink', 'Emma Pape', 'Jameson Downs', 'Louis-Phillippe Delcourt', 'John Rappel',
+  'Zach Ayyad', 'Conrad Siavelis', 'Bowen Domaleski', 'Joseph Krausfeldt', 'Jayden Finke',
+  'Cash Cieslak', 'Matthew Cudio', 'Gavin Gu', 'Kenneth Kim', 'Ari Drivas',
+  'Rylan Axe'
+]
 
 const NICKNAME_MAP: Record<string, string[]> = {
   ken: ['kenneth', 'kenny', 'ken'],
@@ -88,7 +118,7 @@ const NICKNAME_MAP: Record<string, string[]> = {
   connor: ['conner', 'connor'],
 }
 
-// Converts Excel serial date numbers or ISO strings to YYYY-MM-DD
+// Format Excel dates
 const formatExcelDate = (val: any): string => {
   if (typeof val === 'number') {
     const dateObj = new Date(Math.round((val - 25569) * 86400 * 1000))
@@ -111,7 +141,8 @@ export default function CoachDashboard() {
   const [data, setData] = useState<LeaderboardRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [selectedLocation, setSelectedLocation] = useState('All')
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([])
+  const [locationDropdownOpen, setLocationDropdownOpen] = useState(false)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -128,6 +159,7 @@ export default function CoachDashboard() {
     position: 'Forward',
     heightInches: 72,
     weightLbs: 185,
+    location: 'GVN- North Shore',
   })
   const [modalError, setModalError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -154,7 +186,23 @@ export default function CoachDashboard() {
     if (error) {
       console.error('Error loading leaderboard:', error.message || error)
     } else {
-      setData(records || [])
+      // Map roster list to GVN- North Shore
+      const mappedRecords = (records || []).map((r) => {
+        const fullName = `${r.first_name || ''} ${r.last_name || ''}`.trim().toLowerCase()
+        const isNorthShore = NORTH_SHORE_ROSTER.some((nsName) => {
+          const nsClean = nsName.trim().toLowerCase()
+          return (
+            fullName === nsClean ||
+            fullName.includes(nsClean) ||
+            nsClean.includes(fullName)
+          )
+        })
+        return {
+          ...r,
+          location: r.location || (isNorthShore ? 'GVN- North Shore' : 'GVN- Chicago'),
+        }
+      })
+      setData(mappedRecords)
     }
     setLoading(false)
   }
@@ -181,8 +229,17 @@ export default function CoachDashboard() {
         position: 'Forward',
         heightInches: 72,
         weightLbs: 185,
+        location: 'GVN- North Shore',
       })
       fetchLeaderboard()
+    }
+  }
+
+  const toggleLocationSelect = (loc: string) => {
+    if (selectedLocations.includes(loc)) {
+      setSelectedLocations(selectedLocations.filter((l) => l !== loc))
+    } else {
+      setSelectedLocations([...selectedLocations, loc])
     }
   }
 
@@ -212,7 +269,6 @@ export default function CoachDashboard() {
 
         setTen80Logs((prev) => [...prev, `Loaded ${rawData.length} rows from file.`])
 
-        // Fetch Supabase profiles
         const { data: profiles, error: pErr } = await supabase
           .from('profiles')
           .select('id, first_name, last_name')
@@ -231,7 +287,6 @@ export default function CoachDashboard() {
         const unmatchedNameSet = new Set<string>()
 
         rawData.forEach((row) => {
-          // Normalize row keys
           const normalizedRow: Record<string, any> = {}
           Object.keys(row).forEach((k) => {
             const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -251,15 +306,12 @@ export default function CoachDashboard() {
 
           const cleanRaw = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
           const parts = cleanRaw.split(' ')
-          
           let rowFirst = parts[0] || cleanRaw
           let rowLast = parts.length >= 2 ? parts[parts.length - 1] : cleanRaw
 
-          // SMART PROFILE MATCHING
           let matchedProfileId: string | null = null
 
           if (profiles) {
-            // 1. Exact Full Name or Swapped Name Match
             for (const p of profiles) {
               if (!p.first_name || !p.last_name) continue
               const pf = p.first_name.trim().toLowerCase()
@@ -276,7 +328,6 @@ export default function CoachDashboard() {
               }
             }
 
-            // 2. Nickname / Prefix Match
             if (!matchedProfileId) {
               for (const p of profiles) {
                 if (!p.first_name || !p.last_name) continue
@@ -304,7 +355,6 @@ export default function CoachDashboard() {
             return
           }
 
-          // Normalized Exercise Name Search
           const exName = String(
             normalizedRow['exercise'] ||
             normalizedRow['exercisename'] ||
@@ -312,7 +362,6 @@ export default function CoachDashboard() {
             ''
           ).toLowerCase()
 
-          // Normalized Concentric Load Search
           const loadKg = parseFloat(
             String(
               normalizedRow['concentricloadkg'] ||
@@ -324,7 +373,6 @@ export default function CoachDashboard() {
             )
           )
 
-          // Normalized Peak Speed Search
           const speedMps = parseFloat(
             String(
               normalizedRow['topspeed'] ||
@@ -336,7 +384,6 @@ export default function CoachDashboard() {
             )
           )
 
-          // Format Excel Date -> YYYY-MM-DD string
           const rawDate =
             normalizedRow['sessiontime'] ||
             normalizedRow['settime'] ||
@@ -431,9 +478,7 @@ export default function CoachDashboard() {
               .from('performance_metrics')
               .insert(metricsToInsert)
 
-            if (insertErr) {
-              dbError = insertErr
-            }
+            if (insertErr) dbError = insertErr
           }
 
           if (dbError) {
@@ -454,14 +499,11 @@ export default function CoachDashboard() {
         }
       } catch (err: unknown) {
         let errorMsg = 'Unknown error occurred'
-        if (err instanceof Error) {
-          errorMsg = err.message
-        } else if (typeof err === 'object' && err !== null) {
+        if (err instanceof Error) errorMsg = err.message
+        else if (typeof err === 'object' && err !== null) {
           const e = err as any
           errorMsg = e.message || e.details || e.error_description || JSON.stringify(err)
-        } else {
-          errorMsg = String(err)
-        }
+        } else errorMsg = String(err)
 
         setTen80Status({ success: false, msg: `Parsing error: ${errorMsg}` })
       } finally {
@@ -471,7 +513,6 @@ export default function CoachDashboard() {
     reader.readAsBinaryString(file)
   }
 
-  // Handle Standard Template File Upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -494,8 +535,6 @@ export default function CoachDashboard() {
           return
         }
 
-        setUploadStatus({ msg: `Uploading ${rawData.length} entries to Supabase...` })
-
         const res = await uploadMetricRows(rawData)
 
         if (res.success) {
@@ -516,7 +555,6 @@ export default function CoachDashboard() {
     reader.readAsBinaryString(file)
   }
 
-  // Generate & Download Pre-formatted Excel Template
   const downloadTemplate = () => {
     const templateData = [
       {
@@ -539,17 +577,12 @@ export default function CoachDashboard() {
     XLSX.writeFile(workbook, 'GVN_Metrics_Upload_Template.xlsx')
   }
 
-  // Extract unique locations dynamically for the filter dropdown
-  const locationsList = Array.from(
-    new Set(data.map((a) => a.location).filter((loc): loc is string => Boolean(loc)))
-  )
-
-  // Filter Data by Search Term AND Selected Location
+  // Filter Data by Search Term AND Multi-selected Locations
   const filteredData = data.filter((a) => {
     const nameMatch = `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
     const locationMatch =
-      selectedLocation === 'All' ||
-      (a.location && a.location.toLowerCase() === selectedLocation.toLowerCase())
+      selectedLocations.length === 0 ||
+      (a.location && selectedLocations.includes(a.location))
     return nameMatch && locationMatch
   })
 
@@ -602,7 +635,7 @@ export default function CoachDashboard() {
           </div>
         </div>
 
-        {/* Filters Bar: Search + GVN Location Filter */}
+        {/* Filters Bar: Search + Multi-Location Checkbox Selector */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
           {/* Search */}
           <div className="relative max-w-md w-full">
@@ -616,29 +649,48 @@ export default function CoachDashboard() {
             />
           </div>
 
-          {/* GVN Location Filter Dropdown */}
-          <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 self-start sm:self-auto">
-            <MapPin className="w-4 h-4 text-red-500" />
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Location:</span>
-            <select
-              value={selectedLocation}
-              onChange={(e) => setSelectedLocation(e.target.value)}
-              className="bg-transparent text-sm font-semibold text-white focus:outline-none cursor-pointer pr-2"
+          {/* Multi-Location Filter Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}
+              className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 hover:border-slate-700 transition"
             >
-              <option value="All" className="bg-slate-900 text-white">All Locations</option>
-              {locationsList.map((loc) => (
-                <option key={loc} value={loc} className="bg-slate-900 text-white">
-                  {loc}
-                </option>
-              ))}
-              {/* Fallback standard locations if database location column is newly populated */}
-              {!locationsList.includes('GVN Chicago') && (
-                <option value="GVN Chicago" className="bg-slate-900 text-white">GVN Chicago</option>
-              )}
-              {!locationsList.includes('GVN North Shore') && (
-                <option value="GVN North Shore" className="bg-slate-900 text-white">GVN North Shore</option>
-              )}
-            </select>
+              <MapPin className="w-4 h-4 text-red-500" />
+              <span className="font-medium">
+                {selectedLocations.length === 0
+                  ? 'All Locations'
+                  : `${selectedLocations.length} Location(s) Selected`}
+              </span>
+            </button>
+
+            {locationDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-3 z-30 space-y-1">
+                <div className="text-xs font-semibold text-slate-400 px-2 py-1 uppercase tracking-wider">
+                  Filter by Facility
+                </div>
+                {GVN_LOCATIONS.map((loc) => {
+                  const isChecked = selectedLocations.includes(loc)
+                  return (
+                    <button
+                      key={loc}
+                      onClick={() => toggleLocationSelect(loc)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
+                    >
+                      <span>{loc}</span>
+                      {isChecked && <Check className="w-4 h-4 text-red-500" />}
+                    </button>
+                  )
+                })}
+                {selectedLocations.length > 0 && (
+                  <button
+                    onClick={() => setSelectedLocations([])}
+                    className="w-full mt-2 pt-2 border-t border-slate-800 text-center text-[11px] font-semibold text-red-400 hover:text-red-300 transition"
+                  >
+                    Clear Selected Filters
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -673,16 +725,17 @@ export default function CoachDashboard() {
                   </tr>
                 ) : (
                   filteredData.map((a) => {
-                    // DYNAMIC SPRINT LEVEL CALCULATION (>= 17.50 mph required for Level 2)
                     const isSprintLevel2 = a.v0_speed !== null && a.v0_speed >= 17.50
                     const sprintLevelLabel = isSprintLevel2 ? 'Level 2' : 'Level 1'
 
                     return (
                       <tr key={a.athlete_id} className="hover:bg-slate-800/40 transition">
                         <td className="py-4 px-6 font-semibold text-white">
-                          {a.first_name} {a.last_name}
+                          <div className="flex items-center space-x-2">
+                            <span>{a.first_name} {a.last_name}</span>
+                          </div>
                           {a.location && (
-                            <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
+                            <span className="inline-block mt-1 px-2 py-0.5 bg-slate-800 text-slate-400 border border-slate-700/60 rounded-md text-[10px] font-medium">
                               {a.location}
                             </span>
                           )}
@@ -768,6 +821,19 @@ export default function CoachDashboard() {
                       className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-slate-400">Training Facility / Location</label>
+                  <select
+                    value={formData.location}
+                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
+                  >
+                    {GVN_LOCATIONS.map((loc) => (
+                      <option key={loc} value={loc}>{loc}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
@@ -955,7 +1021,6 @@ export default function CoachDashboard() {
                 </button>
               </div>
 
-              {/* Status Notifications */}
               {uploadStatus && (
                 <div
                   className={`p-4 rounded-xl border text-xs space-y-2 ${
@@ -984,7 +1049,6 @@ export default function CoachDashboard() {
                 </div>
               )}
 
-              {/* Upload Dropzone */}
               <div className="border-2 border-dashed border-slate-700 hover:border-red-500 rounded-xl p-8 text-center bg-slate-950/40 transition group cursor-pointer relative">
                 <input
                   type="file"
