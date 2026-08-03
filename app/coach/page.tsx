@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { createAthleteAction, uploadMetricRows } from './actions'
 
@@ -30,6 +30,7 @@ export default function CoachDashboard() {
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+  const [ten80ModalOpen, setTen80ModalOpen] = useState(false)
 
   // Add Athlete Form State
   const [formData, setFormData] = useState({
@@ -48,6 +49,11 @@ export default function CoachDashboard() {
   // Upload Metrics State
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<{ success?: boolean; msg: string; errors?: string[] } | null>(null)
+
+  // 1080 Upload State
+  const [ten80Uploading, setTen80Uploading] = useState(false)
+  const [ten80Logs, setTen80Logs] = useState<string[]>([])
+  const [ten80Status, setTen80Status] = useState<{ success?: boolean; msg: string } | null>(null)
 
   useEffect(() => {
     fetchLeaderboard()
@@ -94,22 +100,219 @@ export default function CoachDashboard() {
     }
   }
 
-  // Handle Excel File Parsing & Processing
+  // Dedicated 1080 Export Processor
+  const handle1080FileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setTen80Uploading(true)
+    setTen80Logs(['Reading 1080 Motion file...'])
+    setTen80Status(null)
+
+    const reader = new FileReader()
+    reader.onload = async (evt) => {
+      try {
+        const buffer = evt.target?.result
+        const wb = XLSX.read(buffer, { type: 'binary' })
+        const wsname = wb.SheetNames[0]
+        const ws = wb.Sheets[wsname]
+        const rawData: any[] = XLSX.utils.sheet_to_json(ws)
+
+        if (!rawData || rawData.length === 0) {
+          setTen80Status({ success: false, msg: 'File is empty or unreadable.' })
+          setTen80Uploading(false)
+          return
+        }
+
+        setTen80Logs((prev) => [...prev, `Loaded ${rawData.length} rows from file.`])
+
+        // Fetch Supabase profiles
+        const { data: profiles, error: pErr } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name')
+
+        if (pErr) throw new Error(`Profiles fetch failed: ${pErr.message}`)
+
+        const profileMap = new Map<string, string>()
+        profiles?.forEach((p) => {
+          if (p.first_name && p.last_name) {
+            const key = `${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase()
+            profileMap.set(key, p.id)
+          }
+        })
+
+        setTen80Logs((prev) => [...prev, `Found ${profileMap.size} active profiles in database.`])
+
+        const athleteSessions: Record<
+          string,
+          { athleteId: string; date: string; isV0: boolean; is10Yd: boolean; reps: { load: number; speed: number }[] }
+        > = {}
+
+        const MPS_TO_MPH = 2.23694
+        let totalMatchedReps = 0
+
+        rawData.forEach((row) => {
+          // Check all possible name header variations
+          const rawName =
+            row['Client'] ||
+            row['User Name'] ||
+            row['Name'] ||
+            row['Athlete'] ||
+            row['Client Name'] ||
+            ''
+
+          if (!rawName) return
+
+          let cleanName = String(rawName).trim()
+          if (cleanName.includes(',')) {
+            const parts = cleanName.split(',')
+            cleanName = `${parts[1].trim()} ${parts[0].trim()}`.toLowerCase()
+          } else {
+            cleanName = cleanName.toLowerCase()
+          }
+
+          const matchedProfileId = profileMap.get(cleanName)
+          if (!matchedProfileId) return
+
+          const exName = String(
+            row['Exercise'] ||
+            row['Exercise Name'] ||
+            row['ExerciseTypeName'] ||
+            ''
+          ).toLowerCase()
+
+          const loadKg = parseFloat(
+            row['Concentric load (kg)'] ||
+              row['Load (kg)'] ||
+              row['Load'] ||
+              row['External load (kg)'] ||
+              '2.0'
+          )
+
+          const speedMps = parseFloat(
+            row['Speed peak (m/s)'] ||
+              row['Peak Speed (m/s)'] ||
+              row['Speed max (m/s)'] ||
+              row['Top Speed (m/s)'] ||
+              row['Speed'] ||
+              '0'
+          )
+
+          const rawDate =
+            row['Date'] ||
+            row['Created'] ||
+            row['Session Date'] ||
+            new Date().toISOString().split('T')[0]
+
+          if (speedMps <= 0) return
+
+          const isV0 = exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
+          const is10Yd = exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
+
+          if (!isV0 && !is10Yd) return
+
+          const dateStr = String(rawDate).split('T')[0].split(' ')[0]
+          const sessionKey = `${matchedProfileId}_${dateStr}_${isV0 ? 'v0' : '10yd'}`
+
+          if (!athleteSessions[sessionKey]) {
+            athleteSessions[sessionKey] = {
+              athleteId: matchedProfileId,
+              date: dateStr,
+              isV0,
+              is10Yd,
+              reps: [],
+            }
+          }
+
+          athleteSessions[sessionKey].reps.push({ load: loadKg, speed: speedMps })
+          totalMatchedReps++
+        })
+
+        setTen80Logs((prev) => [
+          ...prev,
+          `Matched ${totalMatchedReps} rep entries across ${Object.keys(athleteSessions).length} unique sprint sessions.`,
+        ])
+
+        // Calculate V0 linear regression and convert to mph
+        const metricsToInsert: any[] = []
+
+        Object.values(athleteSessions).forEach((session) => {
+          let maxSpeedMps = Math.max(...session.reps.map((r) => r.speed))
+          let calculatedV0Mps = maxSpeedMps
+
+          if (session.isV0 && session.reps.length >= 2) {
+            const n = session.reps.length
+            let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
+
+            session.reps.forEach((pt) => {
+              sumX += pt.load
+              sumY += pt.speed
+              sumXY += pt.load * pt.speed
+              sumXX += pt.load * pt.load
+            })
+
+            const denom = n * sumXX - sumX * sumX
+            if (denom !== 0) {
+              const slope = (n * sumXY - sumX * sumY) / denom
+              const intercept = (sumY - slope * sumX) / n
+              if (intercept > maxSpeedMps) calculatedV0Mps = intercept
+            }
+          }
+
+          const maxSpeedMph = Number((maxSpeedMps * MPS_TO_MPH).toFixed(2))
+          const calculatedV0Mph = Number((calculatedV0Mps * MPS_TO_MPH).toFixed(2))
+
+          metricsToInsert.push({
+            athlete_id: session.athleteId,
+            test_date: session.date,
+            v0_speed: session.isV0 ? calculatedV0Mph : null,
+            top_speed: session.is10Yd ? maxSpeedMph : null,
+          })
+        })
+
+        if (metricsToInsert.length > 0) {
+          const { error: insertErr } = await supabase
+            .from('performance_metrics')
+            .upsert(metricsToInsert, { onConflict: 'athlete_id, test_date' })
+
+          if (insertErr) throw insertErr
+
+          setTen80Status({
+            success: true,
+            msg: `Successfully imported ${metricsToInsert.length} sprint session record(s) into database!`,
+          })
+          fetchLeaderboard()
+        } else {
+          setTen80Status({
+            success: false,
+            msg: '0 records imported. Make sure athlete names in the 1080 file match athlete names in GVN profiles.',
+          })
+        }
+      } catch (err: any) {
+        setTen80Status({ success: false, msg: `Parsing error: ${err.message}` })
+      } finally {
+        setTen80Uploading(false)
+      }
+    }
+    reader.readAsBinaryString(file)
+  }
+
+  // Handle Standard Template File Upload
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
     setUploading(true)
-    setUploadStatus({ msg: 'Reading file contents...' })
+    setUploadStatus({ msg: 'Parsing file contents...' })
 
     const reader = new FileReader()
     reader.onload = async (evt) => {
       try {
-        const dataBuffer = evt.target?.result
-        const wb = XLSX.read(dataBuffer, { type: 'binary' })
+        const bstr = evt.target?.result
+        const wb = XLSX.read(bstr, { type: 'binary' })
         const wsname = wb.SheetNames[0]
         const ws = wb.Sheets[wsname]
-        const rawData: any[] = XLSX.utils.sheet_to_json(ws)
+        const rawData = XLSX.utils.sheet_to_json(ws)
 
         if (!rawData || rawData.length === 0) {
           setUploadStatus({ success: false, msg: 'Excel sheet appears to be empty.' })
@@ -117,183 +320,8 @@ export default function CoachDashboard() {
           return
         }
 
-        // AUTO-DETECT 1080 MOTION EXPORT FORMAT
-        const sample = rawData[0] || {}
-        const is1080Format =
-          'Client' in sample ||
-          'User Name' in sample ||
-          'Concentric load (kg)' in sample ||
-          'Speed peak (m/s)' in sample ||
-          'Peak Speed (m/s)' in sample
-
-        if (is1080Format) {
-          setUploadStatus({ msg: 'Detected 1080 Motion Export! Matching athletes and computing V0...' })
-
-          // 1. Fetch Supabase profiles
-          const { data: profiles, error: pErr } = await supabase
-            .from('profiles')
-            .select('id, first_name, last_name')
-
-          if (pErr) throw new Error(`Profiles fetch failed: ${pErr.message}`)
-
-          const profileMap = new Map<string, string>()
-          profiles?.forEach((p) => {
-            if (p.first_name && p.last_name) {
-              const fullKey = `${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase()
-              profileMap.set(fullKey, p.id)
-            }
-          })
-
-          const athleteSessions: Record<
-            string,
-            { athleteId: string; date: string; isV0: boolean; is10Yd: boolean; reps: { load: number; speed: number }[] }
-          > = {}
-          const MPS_TO_MPH = 2.23694
-          let matchedRows = 0
-
-          // 2. Parse 1080 Export Rows
-          rawData.forEach((row) => {
-            let rawName =
-              row['Client'] ||
-              row['User Name'] ||
-              row['Name'] ||
-              row['Athlete'] ||
-              row['Client Name'] ||
-              ''
-
-            if (!rawName) return
-
-            // Standardize "Last, First" or "First Last" format
-            let cleanName = String(rawName).trim()
-            if (cleanName.includes(',')) {
-              const parts = cleanName.split(',')
-              cleanName = `${parts[1].trim()} ${parts[0].trim()}`.toLowerCase()
-            } else {
-              cleanName = cleanName.toLowerCase()
-            }
-
-            const matchedProfileId = profileMap.get(cleanName)
-            if (!matchedProfileId) return
-
-            const exName = (
-              row['Exercise'] ||
-              row['Exercise Name'] ||
-              row['ExerciseTypeName'] ||
-              ''
-            ).toLowerCase()
-
-            const loadKg = parseFloat(
-              row['Concentric load (kg)'] ||
-                row['Load (kg)'] ||
-                row['Load'] ||
-                row['External load (kg)'] ||
-                '2.0'
-            )
-
-            const speedMps = parseFloat(
-              row['Speed peak (m/s)'] ||
-                row['Peak Speed (m/s)'] ||
-                row['Speed max (m/s)'] ||
-                row['Top Speed (m/s)'] ||
-                row['Speed'] ||
-                '0'
-            )
-
-            const rawDate =
-              row['Date'] ||
-              row['Created'] ||
-              row['Session Date'] ||
-              new Date().toISOString().split('T')[0]
-
-            if (speedMps <= 0) return
-
-            const isV0 =
-              exName.includes('off-ice sprint profiling') || exName.includes('sprint profiling')
-            const is10Yd =
-              exName.includes('10yd off-ice sprint') || exName.includes('10yd sprint')
-
-            if (!isV0 && !is10Yd) return
-
-            const dateStr = String(rawDate).split('T')[0].split(' ')[0]
-            const sessionKey = `${matchedProfileId}_${dateStr}_${isV0 ? 'v0' : '10yd'}`
-
-            if (!athleteSessions[sessionKey]) {
-              athleteSessions[sessionKey] = {
-                athleteId: matchedProfileId,
-                date: dateStr,
-                isV0,
-                is10Yd,
-                reps: [],
-              }
-              matchedRows++
-            }
-
-            athleteSessions[sessionKey].reps.push({ load: loadKg, speed: speedMps })
-          })
-
-          // 3. Compute V0 Linear Regression and convert m/s -> mph
-          const metricsToInsert: any[] = []
-
-          Object.values(athleteSessions).forEach((session) => {
-            let maxSpeedMps = Math.max(...session.reps.map((r) => r.speed))
-            let calculatedV0Mps = maxSpeedMps
-
-            if (session.isV0 && session.reps.length >= 2) {
-              const n = session.reps.length
-              let sumX = 0,
-                sumY = 0,
-                sumXY = 0,
-                sumXX = 0
-
-              session.reps.forEach((pt) => {
-                sumX += pt.load
-                sumY += pt.speed
-                sumXY += pt.load * pt.speed
-                sumXX += pt.load * pt.load
-              })
-
-              const denom = n * sumXX - sumX * sumX
-              if (denom !== 0) {
-                const slope = (n * sumXY - sumX * sumY) / denom
-                const intercept = (sumY - slope * sumX) / n
-                if (intercept > maxSpeedMps) calculatedV0Mps = intercept
-              }
-            }
-
-            const maxSpeedMph = Number((maxSpeedMps * MPS_TO_MPH).toFixed(2))
-            const calculatedV0Mph = Number((calculatedV0Mps * MPS_TO_MPH).toFixed(2))
-
-            metricsToInsert.push({
-              athlete_id: session.athleteId,
-              test_date: session.date,
-              v0_speed: session.isV0 ? calculatedV0Mph : null,
-              top_speed: session.is10Yd ? maxSpeedMph : null,
-            })
-          })
-
-          if (metricsToInsert.length > 0) {
-            const { error: insertErr } = await supabase
-              .from('performance_metrics')
-              .upsert(metricsToInsert, { onConflict: 'athlete_id, test_date' })
-
-            if (insertErr) throw insertErr
-
-            setUploadStatus({
-              success: true,
-              msg: `Successfully imported 1080 Sprint data! Updated ${metricsToInsert.length} sprint session records (V0 calculated in mph).`,
-            })
-            fetchLeaderboard()
-          } else {
-            setUploadStatus({
-              success: false,
-              msg: `Found 1080 data, but 0 athletes matched your database roster. Ensure athlete names in 1080 match first and last names in GVN profiles.`,
-            })
-          }
-          return
-        }
-
-        // STANDARD METRICS TEMPLATE UPLOAD
         setUploadStatus({ msg: `Uploading ${rawData.length} entries to Supabase...` })
+
         const res = await uploadMetricRows(rawData)
 
         if (res.success) {
@@ -328,18 +356,6 @@ export default function CoachDashboard() {
         'Chin-ups': 18,
         'Weight (lbs)': 195,
       },
-      {
-        'First Name': 'Jack',
-        'Last Name': 'Eichel',
-        'Test Date': '2026-08-01',
-        'ISO Peak Force (N)': 3800,
-        'V0 Speed': 16.8,
-        'CMJ Height (in)': 21.5,
-        'Broad Jump (in)': 108,
-        'Bench Velo (m/s)': 1.10,
-        'Chin-ups': 15,
-        'Weight (lbs)': 205,
-      },
     ]
 
     const worksheet = XLSX.utils.json_to_sheet(templateData)
@@ -365,6 +381,19 @@ export default function CoachDashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {/* NEW 1080 DEDICATED BUTTON */}
+            <button
+              onClick={() => {
+                setTen80Status(null)
+                setTen80Logs([])
+                setTen80ModalOpen(true)
+              }}
+              className="flex items-center space-x-2 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-semibold px-4 py-2.5 rounded-lg transition shadow-lg shadow-orange-600/20"
+            >
+              <Zap className="w-4 h-4 text-amber-200 fill-amber-200" />
+              <span>Import 1080 Sprint Data</span>
+            </button>
+
             <button
               onClick={() => {
                 setUploadStatus(null)
@@ -372,9 +401,10 @@ export default function CoachDashboard() {
               }}
               className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
             >
-              <FileSpreadsheet className="w-4 h-4 text-red-500" />
-              <span>Import Data / Template</span>
+              <FileSpreadsheet className="w-4 h-4 text-slate-400" />
+              <span>General Template Upload</span>
             </button>
+
             <button
               onClick={() => {
                 setModalError('')
@@ -606,14 +636,92 @@ export default function CoachDashboard() {
           </div>
         )}
 
-        {/* MODAL 2: UPLOAD DATA / DOWNLOAD TEMPLATE */}
+        {/* MODAL 2: DEDICATED 1080 MOTION SPRINT IMPORT */}
+        {ten80ModalOpen && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <Zap className="w-5 h-5 text-orange-400 fill-orange-400" />
+                  <h3 className="text-xl font-bold text-white">Import 1080 Motion Data</h3>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Upload raw 1080 Motion Excel export (.xlsx). Automatically matches athletes, computes linear V0 regressions, and converts speeds to mph.
+                </p>
+              </div>
+
+              {/* Status Alert */}
+              {ten80Status && (
+                <div
+                  className={`p-4 rounded-xl border text-xs ${
+                    ten80Status.success
+                      ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+                      : 'bg-red-950/40 border-red-800 text-red-300'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2 font-medium">
+                    {ten80Status.success ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-red-400" />
+                    )}
+                    <span>{ten80Status.msg}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Log Output Console */}
+              {ten80Logs.length > 0 && (
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 max-h-32 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-1">
+                  {ten80Logs.map((log, i) => (
+                    <div key={i}>&gt; {log}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* Dropzone */}
+              <div className="border-2 border-dashed border-orange-900/60 hover:border-orange-500 rounded-xl p-8 text-center bg-slate-950/40 transition group cursor-pointer relative">
+                <input
+                  type="file"
+                  accept=".xlsx, .xls, .csv"
+                  onChange={handle1080FileUpload}
+                  disabled={ten80Uploading}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <div className="flex flex-col items-center space-y-3">
+                  <div className="p-3 bg-orange-950/40 rounded-full group-hover:bg-orange-900/60 transition">
+                    <Upload className="w-6 h-6 text-orange-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-200">
+                      {ten80Uploading ? 'Processing 1080 File...' : 'Upload 1080 Motion Excel Export'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Select linear-export-237 clients file (.xlsx / .csv)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setTen80ModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL 3: GENERAL TEMPLATE UPLOAD */}
         {uploadModalOpen && (
           <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6">
               <div className="flex justify-between items-start">
                 <div>
                   <h3 className="text-xl font-bold text-white">Import Metrics & Field Tests</h3>
-                  <p className="text-xs text-slate-400 mt-1">Upload Hawkins, 1080 Sprint, or manual Excel files.</p>
+                  <p className="text-xs text-slate-400 mt-1">Upload standard GVN template file.</p>
                 </div>
                 <button
                   onClick={downloadTemplate}
@@ -668,11 +776,9 @@ export default function CoachDashboard() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200">
-                      {uploading ? 'Processing file...' : 'Click or drag file to upload'}
+                      {uploading ? 'Processing file...' : 'Click or drag template file to upload'}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Auto-detects 1080 Sprint exports or standard templates (.xlsx, .xls, .csv)
-                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Supports pre-formatted .xlsx, .xls, or .csv template</p>
                   </div>
                 </div>
               </div>
