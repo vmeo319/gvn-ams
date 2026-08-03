@@ -22,7 +22,6 @@ interface LeaderboardRecord {
   sprint_level: string
 }
 
-// Common Nickname Map for Athlete Matching
 const NICKNAME_MAP: Record<string, string[]> = {
   ken: ['kenneth', 'kenny', 'ken'],
   kenny: ['kenneth', 'ken', 'kenny'],
@@ -166,7 +165,7 @@ export default function CoachDashboard() {
     }
   }
 
-  // Smart 1080 Export Processor
+  // Robust 1080 Export Processor
   const handle1080FileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -211,29 +210,30 @@ export default function CoachDashboard() {
         const unmatchedNameSet = new Set<string>()
 
         rawData.forEach((row) => {
-          const rawName =
-            (row['Client'] as string) ||
-            (row['User Name'] as string) ||
-            (row['Name'] as string) ||
-            (row['Athlete'] as string) ||
-            (row['Client Name'] as string) ||
+          // Normalize row keys (lowercased & stripped of non-alphanumeric chars)
+          const normalizedRow: Record<string, any> = {}
+          Object.keys(row).forEach((k) => {
+            const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, '')
+            normalizedRow[cleanKey] = row[k]
+          })
+
+          // Extract metrics using normalized header search
+          const rawName = String(
+            normalizedRow['client'] ||
+            normalizedRow['username'] ||
+            normalizedRow['name'] ||
+            normalizedRow['athlete'] ||
+            normalizedRow['clientname'] ||
             ''
+          )
 
           if (!rawName) return
 
-          // Clean punctuation and normalize spacing
-          const cleanRaw = String(rawName).replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+          const cleanRaw = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
           const parts = cleanRaw.split(' ')
           
-          let rowFirst = ''
-          let rowLast = ''
-          if (parts.length >= 2) {
-            rowFirst = parts[0]
-            rowLast = parts[parts.length - 1]
-          } else {
-            rowFirst = cleanRaw
-            rowLast = cleanRaw
-          }
+          let rowFirst = parts[0] || cleanRaw
+          let rowLast = parts.length >= 2 ? parts[parts.length - 1] : cleanRaw
 
           // SMART PROFILE MATCHING
           let matchedProfileId: string | null = null
@@ -256,7 +256,7 @@ export default function CoachDashboard() {
               }
             }
 
-            // 2. Nickname / Prefix Match on First Name + Exact Last Name Match
+            // 2. Nickname / Prefix Match
             if (!matchedProfileId) {
               for (const p of profiles) {
                 if (!p.first_name || !p.last_name) continue
@@ -266,14 +266,9 @@ export default function CoachDashboard() {
                 const sameLast = rowLast === pl || rowFirst === pl || cleanRaw.includes(pl)
                 if (!sameLast) continue
 
-                // Check prefix (e.g. Josh vs Joshua, Ken vs Kenneth)
                 const isPrefix = pf.startsWith(rowFirst) || rowFirst.startsWith(pf)
-                
-                // Check nickname table (e.g. Kenny -> Kenneth)
                 const nickList = NICKNAME_MAP[rowFirst] || []
                 const isNick = nickList.includes(pf)
-
-                // First letter match fallback if last name is unique
                 const firstLetterMatch = pf[0] === rowFirst[0]
 
                 if (isPrefix || isNick || firstLetterMatch) {
@@ -285,53 +280,60 @@ export default function CoachDashboard() {
           }
 
           if (!matchedProfileId) {
-            unmatchedNameSet.add(String(rawName).trim())
+            unmatchedNameSet.add(rawName.trim())
             return
           }
 
+          // Normalized Exercise Name Search
           const exName = String(
-            row['Exercise'] ||
-            row['Exercise Name'] ||
-            row['ExerciseTypeName'] ||
+            normalizedRow['exercise'] ||
+            normalizedRow['exercisename'] ||
+            normalizedRow['exercisetypename'] ||
             ''
           ).toLowerCase()
 
+          // Normalized Concentric Load Search
           const loadKg = parseFloat(
             String(
-              row['Concentric load (kg)'] ||
-                row['Load (kg)'] ||
-                row['Load'] ||
-                row['External load (kg)'] ||
-                '2.0'
+              normalizedRow['concentricloadkg'] ||
+              normalizedRow['concentricload'] ||
+              normalizedRow['loadkg'] ||
+              normalizedRow['load'] ||
+              normalizedRow['externalloadkg'] ||
+              '2.0'
             )
           )
 
+          // Normalized Peak Speed Search (catches 'topspeed', 'speedpeakms', etc.)
           const speedMps = parseFloat(
             String(
-              row['Speed peak (m/s)'] ||
-                row['Peak Speed (m/s)'] ||
-                row['Speed max (m/s)'] ||
-                row['Top Speed (m/s)'] ||
-                row['Speed'] ||
-                '0'
+              normalizedRow['topspeed'] ||
+              normalizedRow['speedpeakms'] ||
+              normalizedRow['peakspeedms'] ||
+              normalizedRow['speedmaxms'] ||
+              normalizedRow['speed'] ||
+              '0'
             )
           )
 
-          const rawDate =
-            (row['Date'] as string) ||
-            (row['Created'] as string) ||
-            (row['Session Date'] as string) ||
+          // Normalized Date Search
+          const rawDate = String(
+            normalizedRow['sessiontime'] ||
+            normalizedRow['settime'] ||
+            normalizedRow['reptime'] ||
+            normalizedRow['date'] ||
+            normalizedRow['created'] ||
             new Date().toISOString().split('T')[0]
+          )
 
           if (speedMps <= 0) return
 
-          // Exercise Matching
           const isV0 = exName.includes('sprint') || exName.includes('profiling') || exName.includes('v0')
-          const is10Yd = exName.includes('10yd') || exName.includes('10 yard')
+          const is10Yd = exName.includes('10yd') || exName.includes('10yard')
 
           if (!isV0 && !is10Yd) return
 
-          const dateStr = String(rawDate).split('T')[0].split(' ')[0]
+          const dateStr = rawDate.split('T')[0].split(' ')[0]
           const sessionKey = `${matchedProfileId}_${dateStr}_${isV0 ? 'v0' : '10yd'}`
 
           if (!athleteSessions[sessionKey]) {
@@ -344,7 +346,7 @@ export default function CoachDashboard() {
             }
           }
 
-          athleteSessions[sessionKey].reps.push({ load: loadKg, speed: speedMps })
+          athleteSessions[sessionKey].reps.push({ load: isNaN(loadKg) ? 2.0 : loadKg, speed: speedMps })
           totalMatchedReps++
         })
 
@@ -352,7 +354,7 @@ export default function CoachDashboard() {
           const unmatchedList = Array.from(unmatchedNameSet)
           setTen80Logs((prev) => [
             ...prev,
-            `Unmatched names in 1080 file (${unmatchedList.length}): "${unmatchedList.slice(0, 5).join('", "')}"${unmatchedList.length > 5 ? '...' : ''}`,
+            `Unmatched names (${unmatchedList.length}): "${unmatchedList.slice(0, 5).join('", "')}"${unmatchedList.length > 5 ? '...' : ''}`,
           ])
         }
 
