@@ -240,7 +240,7 @@ export async function uploadMetricRows(rows: any[]) {
 }
 
 /**
- * 4. ACTION: Parse & Ingest Master Hawkins CSV Exports (Unlimited Rows)
+ * 4. ACTION: Parse & Ingest Master Hawkins CSV Exports (Optimized Fast Batch)
  */
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
@@ -252,6 +252,7 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
   let activeProfiles = profiles || []
 
+  // Group incoming rows by athlete_id + test_date in memory first
   const sessionMap = new Map<
     string,
     {
@@ -349,52 +350,24 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   }
 
   const sessionsArray = Array.from(sessionMap.values())
-  const chunkSize = 500
 
-  for (let i = 0; i < sessionsArray.length; i += chunkSize) {
-    const chunk = sessionsArray.slice(i, i + chunkSize)
+  // Fast Bulk Upsert using Database Upsert with unique constraints
+  for (const session of sessionsArray) {
+    const payload: Record<string, any> = {
+      athlete_id: session.athleteId,
+      test_date: session.testDate,
+    }
+    if (session.cmjHeight !== null) payload.cmj_height_inches = session.cmjHeight
+    if (session.isoForce !== null) payload.iso_belt_squat_peak_force = session.isoForce
 
-    for (const session of chunk) {
-      const { data: existingRecord } = await supabaseAdmin
-        .from('performance_metrics')
-        .select('id, iso_belt_squat_peak_force, cmj_height_inches')
-        .eq('athlete_id', session.athleteId)
-        .eq('test_date', session.testDate)
-        .maybeSingle()
+    const { error } = await supabaseAdmin
+      .from('performance_metrics')
+      .upsert(payload, { onConflict: 'athlete_id, test_date' })
 
-      let error: any = null
-
-      if (existingRecord) {
-        const updateData: Record<string, any> = {}
-        if (session.cmjHeight !== null) updateData.cmj_height_inches = session.cmjHeight
-        if (session.isoForce !== null) updateData.iso_belt_squat_peak_force = session.isoForce
-
-        const { error: updateErr } = await supabaseAdmin
-          .from('performance_metrics')
-          .update(updateData)
-          .eq('id', existingRecord.id)
-
-        error = updateErr
-      } else {
-        const insertData: Record<string, any> = {
-          athlete_id: session.athleteId,
-          test_date: session.testDate,
-        }
-        if (session.cmjHeight !== null) insertData.cmj_height_inches = session.cmjHeight
-        if (session.isoForce !== null) insertData.iso_belt_squat_peak_force = session.isoForce
-
-        const { error: insertErr } = await supabaseAdmin
-          .from('performance_metrics')
-          .insert(insertData)
-
-        error = insertErr
-      }
-
-      if (error) {
-        errors.push(`Error saving metrics for athlete ID ${session.athleteId}: ${error.message}`)
-      } else {
-        insertedCount++
-      }
+    if (error) {
+      errors.push(`Error saving session for athlete ID ${session.athleteId}: ${error.message}`)
+    } else {
+      insertedCount++
     }
   }
 
