@@ -83,7 +83,7 @@ export async function createAthleteAction(data: NewAthleteData) {
 }
 
 /**
- * 2. Helper: Strict Name Matcher for Hawkins/Excel Imports
+ * 2. Helper: Strict Name Matcher
  */
 function findProfileId(rawName: string, profiles: any[]): string | null {
   if (!rawName) return null
@@ -107,28 +107,32 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
 }
 
 /**
- * Helper: Auto-create stub profile for unmapped athletes
+ * Helper: Quick stub creator for unmapped athletes
  */
-async function autoCreateAthlete(rawName: string): Promise<string | null> {
+async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, string>): Promise<string | null> {
+  const cleanName = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
+  const lowerKey = cleanName.toLowerCase()
+  
+  if (profilesMap.has(lowerKey)) {
+    return profilesMap.get(lowerKey)!
+  }
+
+  const parts = cleanName.split(' ')
+  const firstName = parts[0] || 'Unknown'
+  const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
+  const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
+
   try {
-    const clean = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
-    const parts = clean.split(' ')
-    const firstName = parts[0] || 'Unknown'
-    const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
-    
-    const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}@gvn-placeholder.com`
-    
     const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
       email: fakeEmail,
       password: 'TemporaryPassword123!',
       email_confirm: true,
       user_metadata: { first_name: firstName, last_name: lastName },
     })
-    
+
     if (authErr || !authData?.user) return null
-    
     const userId = authData.user.id
-    
+
     await supabaseAdmin.from('profiles').upsert({
       id: userId,
       first_name: firstName,
@@ -137,7 +141,8 @@ async function autoCreateAthlete(rawName: string): Promise<string | null> {
       location: 'GVN- North Shore',
       role: 'athlete'
     })
-    
+
+    profilesMap.set(lowerKey, userId)
     return userId
   } catch {
     return null
@@ -155,7 +160,10 @@ export async function uploadMetricRows(rows: any[]) {
     .from('profiles')
     .select('id, first_name, last_name, weight_lbs')
 
-  let activeProfiles = profiles || []
+  const profilesMap = new Map<string, string>()
+  ;(profiles || []).forEach(p => {
+    profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id)
+  })
 
   for (const row of rows) {
     const rawName =
@@ -164,44 +172,20 @@ export async function uploadMetricRows(rows: any[]) {
       row['Athlete'] ||
       `${row.first_name || row['First Name'] || ''} ${row.last_name || row['Last Name'] || ''}`.trim()
 
-    let athleteId = findProfileId(rawName, activeProfiles)
-
-    if (!athleteId && rawName.trim()) {
-      athleteId = await autoCreateAthlete(rawName)
-      if (!athleteId) {
-        errors.push(`Athlete "${rawName}" not found and auto-create failed.`)
-        continue
-      }
-      
-      const parts = rawName.trim().split(' ')
-      activeProfiles.push({
-        id: athleteId,
-        first_name: parts[0] || 'Unknown',
-        last_name: parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown',
-        weight_lbs: 180
-      })
+    if (!rawName) continue
+    const athleteId = await getOrCreateAthleteId(rawName, profilesMap)
+    if (!athleteId) {
+      errors.push(`Athlete "${rawName}" could not be resolved.`)
+      continue
     }
 
-    if (!athleteId) continue
-
-    const matchedProfile = activeProfiles.find((p) => p.id === athleteId)
-    const athleteWeightLbs = Number(row.weight_lbs || row['Weight (lbs)'] || matchedProfile?.weight_lbs || 180)
-
     const testDate = row.test_date || row['Test Date'] || new Date().toISOString().split('T')[0]
-
     let isoPeakForce = row.iso_belt_squat_peak_force || row.iso_peak_force || row['ISO Peak Force (N/kg)'] || row['Relative Peak Force (BW)']
     const v0Speed = row.v0_speed || row['V0 Speed']
     const cmjHeight = row.cmj_height_inches || row.cmj_height_in || row['CMJ Height (in)'] || row['Jump Height']
     const broadJump = row.broad_jump_inches || row.broad_jump_in || row['Broad Jump (in)']
     const benchVelo = row.bench_velo_ms || row['Bench Velo (m/s)']
     const chinUps = row.chin_ups || row['Chin-ups']
-
-    const { data: existingRecord } = await supabaseAdmin
-      .from('performance_metrics')
-      .select('id')
-      .eq('athlete_id', athleteId)
-      .eq('test_date', testDate)
-      .maybeSingle()
 
     const metricPayload = {
       athlete_id: athleteId,
@@ -212,22 +196,12 @@ export async function uploadMetricRows(rows: any[]) {
       broad_jump_inches: broadJump ? Number(broadJump) : null,
       bench_velo_ms: benchVelo ? Number(benchVelo) : null,
       chin_ups: chinUps ? Number(chinUps) : null,
-      weight_lbs: athleteWeightLbs,
+      weight_lbs: 180,
     }
 
-    let error: any = null
-    if (existingRecord) {
-      const { error: updateErr } = await supabaseAdmin
-        .from('performance_metrics')
-        .update(metricPayload)
-        .eq('id', existingRecord.id)
-      error = updateErr
-    } else {
-      const { error: insertErr } = await supabaseAdmin
-        .from('performance_metrics')
-        .insert(metricPayload)
-      error = insertErr
-    }
+    const { error } = await supabaseAdmin
+      .from('performance_metrics')
+      .upsert(metricPayload, { onConflict: 'athlete_id, test_date' })
 
     if (error) {
       errors.push(`Error saving metrics for "${rawName}": ${error.message}`)
@@ -240,7 +214,7 @@ export async function uploadMetricRows(rows: any[]) {
 }
 
 /**
- * 4. ACTION: Parse & Ingest Master Hawkins CSV Exports (Optimized Fast Batch)
+ * 4. ACTION: Parse & Ingest Master Hawkins CSV Exports (Optimized Bulk)
  */
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
@@ -250,9 +224,12 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
     .from('profiles')
     .select('id, first_name, last_name, weight_lbs')
 
-  let activeProfiles = profiles || []
+  const profilesMap = new Map<string, string>()
+  ;(profiles || []).forEach(p => {
+    profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id)
+  })
 
-  // Group incoming rows by athlete_id + test_date in memory first
+  // Aggregate sessions in memory
   const sessionMap = new Map<
     string,
     {
@@ -267,22 +244,11 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
     const rawName = String(row.Name || row.name || '').trim()
     if (!rawName) continue
 
-    let athleteId = findProfileId(rawName, activeProfiles)
-
+    // Find or quick-create athlete
+    const athleteId = await getOrCreateAthleteId(rawName, profilesMap)
     if (!athleteId) {
-      athleteId = await autoCreateAthlete(rawName)
-      if (!athleteId) {
-        errors.push(`Athlete "${rawName}" not found and auto-create failed.`)
-        continue
-      }
-      
-      const parts = rawName.split(' ')
-      activeProfiles.push({
-        id: athleteId,
-        first_name: parts[0] || 'Unknown',
-        last_name: parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown',
-        weight_lbs: 180
-      })
+      errors.push(`Athlete "${rawName}" could not be resolved.`)
+      continue
     }
 
     let testDate = new Date().toISOString().split('T')[0]
@@ -351,7 +317,7 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
   const sessionsArray = Array.from(sessionMap.values())
 
-  // Fast Bulk Upsert using Database Upsert with unique constraints
+  // Fast Bulk Upsert
   for (const session of sessionsArray) {
     const payload: Record<string, any> = {
       athlete_id: session.athleteId,
@@ -365,7 +331,7 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       .upsert(payload, { onConflict: 'athlete_id, test_date' })
 
     if (error) {
-      errors.push(`Error saving session for athlete ID ${session.athleteId}: ${error.message}`)
+      errors.push(`Error saving session: ${error.message}`)
     } else {
       insertedCount++
     }
