@@ -144,20 +144,39 @@ export async function uploadMetricRows(rows: any[]) {
     const benchVelo = row.bench_velo_ms || row['Bench Velo (m/s)']
     const chinUps = row.chin_ups || row['Chin-ups']
 
-    const { error } = await supabaseAdmin.from('performance_metrics').upsert(
-      {
-        athlete_id: athleteId,
-        test_date: testDate,
-        iso_belt_squat_peak_force: isoPeakForce ? Number(Number(isoPeakForce).toFixed(2)) : null,
-        v0_speed: v0Speed ? Number(v0Speed) : null,
-        cmj_height_inches: cmjHeight ? Number(cmjHeight).toFixed(2) : null,
-        broad_jump_inches: broadJump ? Number(broadJump) : null,
-        bench_velo_ms: benchVelo ? Number(benchVelo) : null,
-        chin_ups: chinUps ? Number(chinUps) : null,
-        weight_lbs: athleteWeightLbs,
-      },
-      { onConflict: 'athlete_id, test_date' }
-    )
+    // Check existing record to avoid ON CONFLICT errors
+    const { data: existingRecord } = await supabaseAdmin
+      .from('performance_metrics')
+      .select('id')
+      .eq('athlete_id', athleteId)
+      .eq('test_date', testDate)
+      .maybeSingle()
+
+    const metricPayload = {
+      athlete_id: athleteId,
+      test_date: testDate,
+      iso_belt_squat_peak_force: isoPeakForce ? Number(Number(isoPeakForce).toFixed(2)) : null,
+      v0_speed: v0Speed ? Number(v0Speed) : null,
+      cmj_height_inches: cmjHeight ? Number(Number(cmjHeight).toFixed(2)) : null,
+      broad_jump_inches: broadJump ? Number(broadJump) : null,
+      bench_velo_ms: benchVelo ? Number(benchVelo) : null,
+      chin_ups: chinUps ? Number(chinUps) : null,
+      weight_lbs: athleteWeightLbs,
+    }
+
+    let error: any = null
+    if (existingRecord) {
+      const { error: updateErr } = await supabaseAdmin
+        .from('performance_metrics')
+        .update(metricPayload)
+        .eq('id', existingRecord.id)
+      error = updateErr
+    } else {
+      const { error: insertErr } = await supabaseAdmin
+        .from('performance_metrics')
+        .insert(metricPayload)
+      error = insertErr
+    }
 
     if (error) {
       errors.push(`Error saving metrics for "${rawName}": ${error.message}`)
@@ -168,8 +187,9 @@ export async function uploadMetricRows(rows: any[]) {
 
   return { success: true, insertedCount, errors }
 }
+
 /**
- * ACTION: Parse & Ingest Hawkins "Scoreboard" CSV Exports
+ * 4. ACTION: Parse & Ingest Hawkins "Scoreboard" CSV Exports
  */
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
@@ -198,8 +218,8 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       if (parts.length === 3) {
         const [m, d, y] = parts
         testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-      } else if (rawDate.includes('-')) {
-        testDate = rawDate
+      } else if (String(rawDate).includes('-')) {
+        testDate = String(rawDate).split('T')[0]
       }
     }
 
@@ -219,7 +239,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     // 2. Isometric Test (Relative Peak Force)
     if (testType.includes('isometric') || row['Relative Peak Force (BW)'] !== undefined) {
-      // Exclude single-leg, bench, or arm swing tags if present
       const isExcluded = tags.includes('arm') || tags.includes('single') || tags.includes('bench')
       if (!isExcluded) {
         const rawForce = Number(
@@ -229,7 +248,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
         )
 
         if (!isNaN(rawForce) && rawForce > 0) {
-          // Scoreboard CSV outputs direct N/kg (e.g. 39.17 - 98.02 N/kg)
           if (rawForce >= 15.0 && rawForce <= 150.0) {
             isoForceNkg = Number(rawForce.toFixed(2))
           } else if (rawForce < 2.0) {
@@ -243,18 +261,41 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     if (cmjInches === null && isoForceNkg === null) continue
 
-    // Build payload dynamically so we don't overwrite existing metric values with null
-    const updatePayload: Record<string, any> = {
-      athlete_id: athleteId,
-      test_date: testDate,
-    }
-
-    if (cmjInches !== null) updatePayload.cmj_height_inches = cmjInches
-    if (isoForceNkg !== null) updatePayload.iso_belt_squat_peak_force = isoForceNkg
-
-    const { error } = await supabaseAdmin
+    // Fetch existing record to avoid ON CONFLICT errors
+    const { data: existingRecord } = await supabaseAdmin
       .from('performance_metrics')
-      .upsert(updatePayload, { onConflict: 'athlete_id, test_date' })
+      .select('id, iso_belt_squat_peak_force, cmj_height_inches')
+      .eq('athlete_id', athleteId)
+      .eq('test_date', testDate)
+      .maybeSingle()
+
+    let error: any = null
+
+    if (existingRecord) {
+      const updateData: Record<string, any> = {}
+      if (cmjInches !== null) updateData.cmj_height_inches = cmjInches
+      if (isoForceNkg !== null) updateData.iso_belt_squat_peak_force = isoForceNkg
+
+      const { error: updateErr } = await supabaseAdmin
+        .from('performance_metrics')
+        .update(updateData)
+        .eq('id', existingRecord.id)
+
+      error = updateErr
+    } else {
+      const insertData: Record<string, any> = {
+        athlete_id: athleteId,
+        test_date: testDate,
+      }
+      if (cmjInches !== null) insertData.cmj_height_inches = cmjInches
+      if (isoForceNkg !== null) insertData.iso_belt_squat_peak_force = isoForceNkg
+
+      const { error: insertErr } = await supabaseAdmin
+        .from('performance_metrics')
+        .insert(insertData)
+
+      error = insertErr
+    }
 
     if (error) {
       errors.push(`Error saving metric for "${rawName}": ${error.message}`)
