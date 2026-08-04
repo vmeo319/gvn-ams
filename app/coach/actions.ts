@@ -2,12 +2,14 @@
 
 import { createClient } from '@supabase/supabase-js'
 
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+
 const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  supabaseUrl,
+  serviceRoleKey || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-// Helper to prevent blank "{}" errors
 const formatError = (err: any) => {
   if (!err) return 'Unknown error.'
   if (typeof err === 'string') return err
@@ -16,7 +18,7 @@ const formatError = (err: any) => {
     const str = JSON.stringify(err)
     if (str !== '{}') return str
   } catch (e) {}
-  return 'Supabase API 500 Error: Please ensure your SUPABASE_SERVICE_ROLE_KEY is added to your Vercel Environment Variables.'
+  return 'Supabase API 500 Error: Database trigger failed or SMTP limit reached.'
 }
 
 interface NewAthleteData {
@@ -31,11 +33,16 @@ interface NewAthleteData {
   location?: string
 }
 
-/**
- * 1. ACTION: Create or Upgrade Athlete Profile (Bulletproof Fallback)
- */
 export async function createAthleteAction(data: NewAthleteData) {
   try {
+    // 🛑 HARD SAFETY CHECK: Prove Vercel has the key
+    if (!serviceRoleKey) {
+      return { 
+        success: false, 
+        error: 'SYSTEM HALTED: The SUPABASE_SERVICE_ROLE_KEY is completely missing. If you added it to Vercel, YOU MUST REDEPLOY the project in Vercel for it to take effect.' 
+      }
+    }
+
     const cleanEmail = data.email.trim().toLowerCase()
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
@@ -47,7 +54,6 @@ export async function createAthleteAction(data: NewAthleteData) {
       return { success: false, error: 'Password must be at least 6 characters long.' }
     }
 
-    // See if this athlete already has a placeholder scoreboard profile
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -57,7 +63,6 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     let newUserId: string | undefined
 
-    // First try the Admin API (works if Service Key is present)
     const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password: data.password,
@@ -68,27 +73,20 @@ export async function createAthleteAction(data: NewAthleteData) {
     if (!adminErr && adminAuth?.user) {
       newUserId = adminAuth.user.id
     } else {
-      // Fallback: If Admin API throws a 500 error or fails, use standard client signup
       const { data: standardAuth, error: standardErr } = await supabaseAdmin.auth.signUp({
         email: cleanEmail,
         password: data.password,
-        options: {
-          data: { first_name: cleanFirstName, last_name: cleanLastName }
-        }
+        options: { data: { first_name: cleanFirstName, last_name: cleanLastName } }
       })
       
       if (standardErr || !standardAuth?.user) {
-        return { 
-          success: false, 
-          error: `Admin Error: ${formatError(adminErr)} | Fallback Error: ${formatError(standardErr)}` 
-        }
+        return { success: false, error: `Admin Error: ${formatError(adminErr)} | Fallback Error: ${formatError(standardErr)}` }
       }
       newUserId = standardAuth.user.id
     }
 
     if (!newUserId) return { success: false, error: 'Failed to generate a user ID.' }
 
-    // Create the updated profile row mapped to the new, working Auth account
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
       id: newUserId,
       first_name: cleanFirstName,
@@ -103,18 +101,10 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     if (profileError) return { success: false, error: formatError(profileError) }
 
-    // DATA MIGRATION: If they had an old placeholder profile, move all metrics to the new ID!
     if (existingAthlete && existingAthlete.id !== newUserId) {
-      await supabaseAdmin
-        .from('performance_metrics')
-        .update({ athlete_id: newUserId })
-        .eq('athlete_id', existingAthlete.id)
-
-      // Clean up the old empty profile
+      await supabaseAdmin.from('performance_metrics').update({ athlete_id: newUserId }).eq('athlete_id', existingAthlete.id)
       await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
-      
-      // Optionally clean up the old auth user if the API lets us
-      try { await supabaseAdmin.auth.admin.deleteUser(existingAthlete.id) } catch (e) { /* ignore */ }
+      try { await supabaseAdmin.auth.admin.deleteUser(existingAthlete.id) } catch (e) { }
     }
 
     return { success: true }
@@ -123,9 +113,6 @@ export async function createAthleteAction(data: NewAthleteData) {
   }
 }
 
-/**
- * 2. Helper: Strict Name Matcher
- */
 function findProfileId(rawName: string, profiles: any[]): string | null {
   if (!rawName) return null
   const clean = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -136,20 +123,12 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
   const match = profiles.find((p) => {
     const pf = (p.first_name || '').trim().toLowerCase()
     const pl = (p.last_name || '').trim().toLowerCase()
-    return (
-      clean === `${pf} ${pl}` ||
-      clean === `${pl} ${pf}` ||
-      (pf === first && pl === last) ||
-      (pf === last && pl === first)
-    )
+    return clean === `${pf} ${pl}` || clean === `${pl} ${pf}` || (pf === first && pl === last) || (pf === last && pl === first)
   })
 
   return match ? match.id : null
 }
 
-/**
- * Helper: Quick stub creator for unmapped athletes (with fallback)
- */
 async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, string>): Promise<string | null> {
   const cleanName = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
   const lowerKey = cleanName.toLowerCase()
@@ -199,29 +178,16 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   }
 }
 
-/**
- * 3. ACTION: Parse & Ingest General Metric Rows
- */
 export async function uploadMetricRows(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
 
-  const { data: profiles } = await supabaseAdmin
-    .from('profiles')
-    .select('id, first_name, last_name, weight_lbs')
-
+  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name, weight_lbs')
   const profilesMap = new Map<string, string>()
-  ;(profiles || []).forEach(p => {
-    profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id)
-  })
+  ;(profiles || []).forEach(p => { profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id) })
 
   for (const row of rows) {
-    const rawName =
-      row.name ||
-      row['Athlete Name'] ||
-      row['Athlete'] ||
-      `${row.first_name || row['First Name'] || ''} ${row.last_name || row['Last Name'] || ''}`.trim()
-
+    const rawName = row.name || row['Athlete Name'] || row['Athlete'] || `${row.first_name || row['First Name'] || ''} ${row.last_name || row['Last Name'] || ''}`.trim()
     if (!rawName) continue
     const athleteId = await getOrCreateAthleteId(rawName, profilesMap)
     if (!athleteId) continue
@@ -240,31 +206,20 @@ export async function uploadMetricRows(rows: any[]) {
       weight_lbs: 180,
     }
 
-    const { error } = await supabaseAdmin
-      .from('performance_metrics')
-      .upsert(metricPayload, { onConflict: 'athlete_id, test_date' })
-
+    const { error } = await supabaseAdmin.from('performance_metrics').upsert(metricPayload, { onConflict: 'athlete_id, test_date' })
     if (!error) insertedCount++
   }
 
   return { success: true, insertedCount, errors }
 }
 
-/**
- * FAST BATCH CHUNK UPLOAD FOR HAWKINS MASTER CSVs
- */
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
 
-  const { data: profiles } = await supabaseAdmin
-    .from('profiles')
-    .select('id, first_name, last_name, weight_lbs')
-
+  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name, weight_lbs')
   const profilesMap = new Map<string, string>()
-  ;(profiles || []).forEach(p => {
-    profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id)
-  })
+  ;(profiles || []).forEach(p => { profilesMap.set(`${p.first_name} ${p.last_name}`.trim().toLowerCase(), p.id) })
 
   const sessionMap = new Map<string, { athleteId: string; testDate: string; cmjHeight: number | null; isoForce: number | null }>()
 
@@ -298,9 +253,7 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     if (testType.includes('countermovement') || row['Jump Height'] !== undefined) {
       const rawJump = Number(row['Jump Height'] || row.jump_height)
-      if (!isNaN(rawJump) && rawJump > 0) {
-        cmjInches = Number(rawJump.toFixed(2))
-      }
+      if (!isNaN(rawJump) && rawJump > 0) cmjInches = Number(rawJump.toFixed(2))
     }
 
     if (testType.includes('isometric')) {
@@ -310,13 +263,9 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       if (isTargetISO && !isExcluded) {
         const rawForce = Number(row['Relative Peak Force (BW)'] || row['Relative Peak Force'] || row.relative_peak_force)
         if (!isNaN(rawForce) && rawForce > 0) {
-          if (rawForce >= 15.0 && rawForce <= 150.0) {
-            isoForceNkg = Number(rawForce.toFixed(2))
-          } else if (rawForce < 2.0) {
-            isoForceNkg = Number((rawForce * 98.0665).toFixed(2))
-          } else if (rawForce < 15.0) {
-            isoForceNkg = Number((rawForce * 9.80665).toFixed(2))
-          }
+          if (rawForce >= 15.0 && rawForce <= 150.0) isoForceNkg = Number(rawForce.toFixed(2))
+          else if (rawForce < 2.0) isoForceNkg = Number((rawForce * 98.0665).toFixed(2))
+          else if (rawForce < 15.0) isoForceNkg = Number((rawForce * 9.80665).toFixed(2))
         }
       }
     }
@@ -337,17 +286,11 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   const sessionsArray = Array.from(sessionMap.values())
 
   for (const session of sessionsArray) {
-    const payload: Record<string, any> = {
-      athlete_id: session.athleteId,
-      test_date: session.testDate,
-    }
+    const payload: Record<string, any> = { athlete_id: session.athleteId, test_date: session.testDate }
     if (session.cmjHeight !== null) payload.cmj_height_inches = session.cmjHeight
     if (session.isoForce !== null) payload.iso_belt_squat_peak_force = session.isoForce
 
-    const { error } = await supabaseAdmin
-      .from('performance_metrics')
-      .upsert(payload, { onConflict: 'athlete_id, test_date' })
-
+    const { error } = await supabaseAdmin.from('performance_metrics').upsert(payload, { onConflict: 'athlete_id, test_date' })
     if (!error) insertedCount++
   }
 
