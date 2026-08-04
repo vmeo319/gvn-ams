@@ -762,6 +762,7 @@ export default function CoachDashboard() {
                   <th className="py-4 px-4">Ht / Wt</th>
                   <th className="py-4 px-4">ISO Peak Force</th>
                   <th className="py-4 px-4">V0 Speed</th>
+                  <th className="py-4 px-4 text-cyan-400">10yd Top Speed</th>
                   <th className="py-4 px-4">Max Jump</th>
                   <th className="py-4 px-4 text-center">Workout Level</th>
                   <th className="py-4 px-4 text-center">Sprint Level</th>
@@ -770,13 +771,13 @@ export default function CoachDashboard() {
               <tbody className="divide-y divide-slate-800/60 text-sm">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-500">
+                    <td colSpan={9} className="py-12 text-center text-slate-500">
                       Loading GVN performance records...
                     </td>
                   </tr>
                 ) : filteredData.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-500">
+                    <td colSpan={9} className="py-12 text-center text-slate-500">
                       No matching athletes found.
                     </td>
                   </tr>
@@ -806,6 +807,9 @@ export default function CoachDashboard() {
                         </td>
                         <td className="py-4 px-4 font-medium text-slate-200">
                           {a.v0_speed ? `${a.v0_speed} mph` : '-'}
+                        </td>
+                        <td className="py-4 px-4 font-bold text-cyan-400">
+                          {a.top_speed ? `${a.top_speed} mph` : '-'}
                         </td>
                         <td className="py-4 px-4 font-medium text-slate-200">
                           {a.max_jump ? `${a.max_jump}"` : '-'}
