@@ -20,7 +20,7 @@ interface NewAthleteData {
 }
 
 /**
- * 1. ACTION: Create or Upgrade Athlete Profile
+ * 1. ACTION: Create or Upgrade Athlete Profile (Seamless Swap)
  */
 export async function createAthleteAction(data: NewAthleteData) {
   try {
@@ -42,41 +42,46 @@ export async function createAthleteAction(data: NewAthleteData) {
       if (authData?.user) {
         const currentEmail = authData.user.email || ''
         
-        // If they have a placeholder email, upgrade them to a real account
+        // If they have a placeholder email, execute the Seamless Account Swap
         if (currentEmail.includes('@gvn-placeholder.com')) {
-          const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
-            existingAthlete.id,
-            {
-              email: cleanEmail,
-              password: data.password,
-              email_confirm: true,
-              user_metadata: {
-                first_name: cleanFirstName,
-                last_name: cleanLastName,
-              }
-            }
-          )
           
-          if (updateAuthErr) {
-            let errStr = updateAuthErr.message
-            if (!errStr || errStr === '{}') errStr = JSON.stringify(updateAuthErr)
-            if (errStr === '{}') errStr = 'Failed to update email. This email may already be in use by another account.'
-            return { success: false, error: errStr }
+          // STEP 1: Create the new REAL auth account
+          const { data: newAuth, error: newAuthErr } = await supabaseAdmin.auth.admin.createUser({
+            email: cleanEmail,
+            password: data.password,
+            email_confirm: true,
+            user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
+          })
+          
+          if (newAuthErr || !newAuth.user) {
+             return { success: false, error: newAuthErr?.message || 'Failed to create real auth account. The email may already be in use.' }
           }
+          
+          const newUserId = newAuth.user.id
+          const oldUserId = existingAthlete.id
 
-          // Update their physical stats while we're at it
-          const { error: profileErr } = await supabaseAdmin
-            .from('profiles')
-            .update({
-              birth_year: data.birthYear,
-              position: data.position,
-              height_inches: data.heightInches,
-              weight_lbs: data.weightLbs,
-              location: data.location || 'GVN- North Shore',
-            })
-            .eq('id', existingAthlete.id)
+          // STEP 2: Create the new profile row (Must be done before moving metrics due to foreign keys)
+          await supabaseAdmin.from('profiles').upsert({
+            id: newUserId,
+            first_name: cleanFirstName,
+            last_name: cleanLastName,
+            birth_year: data.birthYear,
+            position: data.position,
+            height_inches: data.heightInches,
+            weight_lbs: data.weightLbs,
+            location: data.location || 'GVN- North Shore',
+            role: 'athlete'
+          })
 
-          if (profileErr) return { success: false, error: profileErr.message }
+          // STEP 3: Transfer all historical metrics to the new account ID
+          await supabaseAdmin
+            .from('performance_metrics')
+            .update({ athlete_id: newUserId })
+            .eq('athlete_id', oldUserId)
+
+          // STEP 4: Delete old profile & placeholder auth user to clean up
+          await supabaseAdmin.from('profiles').delete().eq('id', oldUserId)
+          await supabaseAdmin.auth.admin.deleteUser(oldUserId)
 
           return { success: true }
         } else {
@@ -88,7 +93,7 @@ export async function createAthleteAction(data: NewAthleteData) {
       }
     }
 
-    // If no existing athlete is found, create a brand new one
+    // If no existing athlete is found, create a brand new one normally
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password: data.password,
