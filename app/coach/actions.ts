@@ -57,10 +57,15 @@ export async function createAthleteAction(data: NewAthleteData) {
             }
           )
           
-          if (updateAuthErr) return { success: false, error: updateAuthErr.message }
+          if (updateAuthErr) {
+            let errStr = updateAuthErr.message
+            if (!errStr || errStr === '{}') errStr = JSON.stringify(updateAuthErr)
+            if (errStr === '{}') errStr = 'Failed to update email. This email may already be in use by another account.'
+            return { success: false, error: errStr }
+          }
 
           // Update their physical stats while we're at it
-          await supabaseAdmin
+          const { error: profileErr } = await supabaseAdmin
             .from('profiles')
             .update({
               birth_year: data.birthYear,
@@ -70,6 +75,8 @@ export async function createAthleteAction(data: NewAthleteData) {
               location: data.location || 'GVN- North Shore',
             })
             .eq('id', existingAthlete.id)
+
+          if (profileErr) return { success: false, error: profileErr.message }
 
           return { success: true }
         } else {
@@ -92,7 +99,13 @@ export async function createAthleteAction(data: NewAthleteData) {
       },
     })
 
-    if (authError) return { success: false, error: authError.message }
+    if (authError) {
+      let errStr = authError.message
+      if (!errStr || errStr === '{}') errStr = JSON.stringify(authError)
+      if (errStr === '{}') errStr = 'Failed to create user. The email address might already be in use.'
+      return { success: false, error: errStr }
+    }
+    
     if (!authData.user) return { success: false, error: 'User creation failed.' }
 
     const userId = authData.user.id
@@ -118,7 +131,9 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     return { success: true }
   } catch (err: any) {
-    return { success: false, error: err.message || 'An unexpected error occurred.' }
+    let msg = err.message || JSON.stringify(err)
+    if (msg === '{}') msg = 'An unexpected server error occurred.'
+    return { success: false, error: msg }
   }
 }
 
