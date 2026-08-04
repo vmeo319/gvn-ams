@@ -116,7 +116,6 @@ async function autoCreateAthlete(rawName: string): Promise<string | null> {
     const firstName = parts[0] || 'Unknown'
     const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
     
-    // Generate a unique placeholder email
     const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}@gvn-placeholder.com`
     
     const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
@@ -134,7 +133,7 @@ async function autoCreateAthlete(rawName: string): Promise<string | null> {
       id: userId,
       first_name: firstName,
       last_name: lastName,
-      weight_lbs: 180, // Default weight to prevent absolute force math failures
+      weight_lbs: 180,
       location: 'GVN- North Shore',
       role: 'athlete'
     })
@@ -241,7 +240,7 @@ export async function uploadMetricRows(rows: any[]) {
 }
 
 /**
- * 4. ACTION: Parse & Ingest Hawkins "Scoreboard" CSV Exports
+ * 4. ACTION: Parse & Ingest Master Hawkins CSV Exports (Unlimited Rows)
  */
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
@@ -253,13 +252,22 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
   let activeProfiles = profiles || []
 
+  const sessionMap = new Map<
+    string,
+    {
+      athleteId: string
+      testDate: string
+      cmjHeight: number | null
+      isoForce: number | null
+    }
+  >()
+
   for (const row of rows) {
     const rawName = String(row.Name || row.name || '').trim()
     if (!rawName) continue
 
     let athleteId = findProfileId(rawName, activeProfiles)
 
-    // AUTO-CREATE ATHLETE IF MISSING
     if (!athleteId) {
       athleteId = await autoCreateAthlete(rawName)
       if (!athleteId) {
@@ -279,12 +287,15 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
     let testDate = new Date().toISOString().split('T')[0]
     const rawDate = row.Date || row.date
     if (rawDate) {
-      const parts = String(rawDate).trim().split('/')
-      if (parts.length === 3) {
-        const [m, d, y] = parts
-        testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-      } else if (String(rawDate).includes('-')) {
-        testDate = String(rawDate).split('T')[0]
+      const dateStr = String(rawDate).trim()
+      if (dateStr.includes('/')) {
+        const parts = dateStr.split('/')
+        if (parts.length === 3) {
+          const [m, d, y] = parts
+          testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+        }
+      } else if (dateStr.includes('-')) {
+        testDate = dateStr.split('T')[0]
       }
     }
 
@@ -301,12 +312,14 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       }
     }
 
-    if (testType.includes('isometric') || row['Relative Peak Force (BW)'] !== undefined) {
-      const isExcluded = tags.includes('arm') || tags.includes('single') || tags.includes('bench')
-      if (!isExcluded) {
+    if (testType.includes('isometric')) {
+      const isTargetISO = tags.includes('iso belt squat - 45') || tags.includes('iso belt squat- 45')
+      const isExcluded = tags.includes('120') || tags.includes('mid-thigh') || tags.includes('floor press') || tags.includes('sprinter')
+
+      if (isTargetISO && !isExcluded) {
         const rawForce = Number(
           row['Relative Peak Force (BW)'] ||
-          row['Relative Peak Force (N/kg)'] ||
+          row['Relative Peak Force'] ||
           row.relative_peak_force
         )
 
@@ -324,45 +337,64 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     if (cmjInches === null && isoForceNkg === null) continue
 
-    const { data: existingRecord } = await supabaseAdmin
-      .from('performance_metrics')
-      .select('id, iso_belt_squat_peak_force, cmj_height_inches')
-      .eq('athlete_id', athleteId)
-      .eq('test_date', testDate)
-      .maybeSingle()
+    const sessionKey = `${athleteId}_${testDate}`
+    const existing = sessionMap.get(sessionKey)
 
-    let error: any = null
+    sessionMap.set(sessionKey, {
+      athleteId,
+      testDate,
+      cmjHeight: cmjInches !== null ? cmjInches : existing?.cmjHeight || null,
+      isoForce: isoForceNkg !== null ? isoForceNkg : existing?.isoForce || null,
+    })
+  }
 
-    if (existingRecord) {
-      const updateData: Record<string, any> = {}
-      if (cmjInches !== null) updateData.cmj_height_inches = cmjInches
-      if (isoForceNkg !== null) updateData.iso_belt_squat_peak_force = isoForceNkg
+  const sessionsArray = Array.from(sessionMap.values())
+  const chunkSize = 500
 
-      const { error: updateErr } = await supabaseAdmin
+  for (let i = 0; i < sessionsArray.length; i += chunkSize) {
+    const chunk = sessionsArray.slice(i, i + chunkSize)
+
+    for (const session of chunk) {
+      const { data: existingRecord } = await supabaseAdmin
         .from('performance_metrics')
-        .update(updateData)
-        .eq('id', existingRecord.id)
+        .select('id, iso_belt_squat_peak_force, cmj_height_inches')
+        .eq('athlete_id', session.athleteId)
+        .eq('test_date', session.testDate)
+        .maybeSingle()
 
-      error = updateErr
-    } else {
-      const insertData: Record<string, any> = {
-        athlete_id: athleteId,
-        test_date: testDate,
+      let error: any = null
+
+      if (existingRecord) {
+        const updateData: Record<string, any> = {}
+        if (session.cmjHeight !== null) updateData.cmj_height_inches = session.cmjHeight
+        if (session.isoForce !== null) updateData.iso_belt_squat_peak_force = session.isoForce
+
+        const { error: updateErr } = await supabaseAdmin
+          .from('performance_metrics')
+          .update(updateData)
+          .eq('id', existingRecord.id)
+
+        error = updateErr
+      } else {
+        const insertData: Record<string, any> = {
+          athlete_id: session.athleteId,
+          test_date: session.testDate,
+        }
+        if (session.cmjHeight !== null) insertData.cmj_height_inches = session.cmjHeight
+        if (session.isoForce !== null) insertData.iso_belt_squat_peak_force = session.isoForce
+
+        const { error: insertErr } = await supabaseAdmin
+          .from('performance_metrics')
+          .insert(insertData)
+
+        error = insertErr
       }
-      if (cmjInches !== null) insertData.cmj_height_inches = cmjInches
-      if (isoForceNkg !== null) insertData.iso_belt_squat_peak_force = isoForceNkg
 
-      const { error: insertErr } = await supabaseAdmin
-        .from('performance_metrics')
-        .insert(insertData)
-
-      error = insertErr
-    }
-
-    if (error) {
-      errors.push(`Error saving metric for "${rawName}": ${error.message}`)
-    } else {
-      insertedCount++
+      if (error) {
+        errors.push(`Error saving metrics for athlete ID ${session.athleteId}: ${error.message}`)
+      } else {
+        insertedCount++
+      }
     }
   }
 
