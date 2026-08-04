@@ -53,16 +53,35 @@ export async function createAthleteAction(data: NewAthleteData) {
     let finalUserId: string
 
     if (existingAthlete) {
-      // 2. ATHLETE EXISTS: Force-update their login credentials. NO DATA LOSS.
-      finalUserId = existingAthlete.id
-      
-      const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
-        finalUserId,
-        { email: cleanEmail, password: data.password, email_confirm: true }
-      )
-      
-      if (updateAuthErr) {
-        return { success: false, error: `Failed to set login for existing athlete: ${formatError(updateAuthErr)}` }
+      // 2. ATHLETE EXISTS: Check if they actually have an Auth login
+      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
+
+      if (authData?.user) {
+        // They have a login (placeholder or otherwise). Force-update the credentials.
+        finalUserId = existingAthlete.id
+        const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+          finalUserId,
+          { email: cleanEmail, password: data.password, email_confirm: true }
+        )
+        if (updateAuthErr) return { success: false, error: `Failed to set login for existing athlete: ${formatError(updateAuthErr)}` }
+      } else {
+        // 🚨 ORPHANED PROFILE DETECTED 🚨
+        // The profile exists, but the login is gone. We must create a new login and move their data.
+        const { data: newAuth, error: newAuthErr } = await supabaseAdmin.auth.admin.createUser({
+          email: cleanEmail,
+          password: data.password,
+          email_confirm: true,
+          user_metadata: { first_name: cleanFirstName, last_name: cleanLastName }
+        })
+        if (newAuthErr || !newAuth?.user) return { success: false, error: `Failed to create new Auth user: ${formatError(newAuthErr)}` }
+        
+        finalUserId = newAuth.user.id
+
+        // Migrate all performance metrics to the new valid ID
+        await supabaseAdmin.from('performance_metrics').update({ athlete_id: finalUserId }).eq('athlete_id', existingAthlete.id)
+        
+        // Delete the old orphaned profile so we can replace it safely
+        await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
       }
     } else {
       // 3. BRAND NEW ATHLETE: Create them from scratch
@@ -80,7 +99,7 @@ export async function createAthleteAction(data: NewAthleteData) {
       finalUserId = adminAuth.user.id
     }
 
-    // 4. Update their physical profile details (Applies to both new and existing)
+    // 4. Update their physical profile details (Applies to all paths)
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
       id: finalUserId,
       first_name: cleanFirstName,
@@ -114,7 +133,6 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   const parts = cleanName.split(' ')
   const firstName = parts[0] || 'Unknown'
   const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
-  // Generates the background dummy email for data imports
   const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
 
   try {
