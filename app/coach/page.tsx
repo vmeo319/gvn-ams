@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { createAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
@@ -142,6 +142,7 @@ export default function CoachDashboard() {
   const [search, setSearch] = useState('')
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false)
+  const [importDropdownOpen, setImportDropdownOpen] = useState(false)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -646,40 +647,61 @@ export default function CoachDashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* Hawkins Upload Button */}
-            <button
-              onClick={() => {
-                setHawkinsStatus(null)
-                setHawkinsModalOpen(true)
-              }}
-              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2.5 rounded-lg transition shadow-lg shadow-blue-600/20"
-            >
-              <Upload className="w-4 h-4" />
-              <span>Import Hawkins CSV</span>
-            </button>
+            
+            {/* UNIFIED IMPORT BUTTON */}
+            <div className="relative">
+              <button
+                onClick={() => setImportDropdownOpen(!importDropdownOpen)}
+                className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-5 py-2.5 rounded-lg border border-slate-700 transition shadow-lg shadow-slate-900"
+              >
+                <Upload className="w-4 h-4 text-cyan-400" />
+                <span>Import Data</span>
+                <ChevronDown className={`w-4 h-4 ml-1 transition-transform ${importDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
 
-            <button
-              onClick={() => {
-                setTen80Status(null)
-                setTen80Logs([])
-                setTen80ModalOpen(true)
-              }}
-              className="flex items-center space-x-2 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-semibold px-4 py-2.5 rounded-lg transition shadow-lg shadow-orange-600/20"
-            >
-              <Zap className="w-4 h-4 text-amber-200 fill-amber-200" />
-              <span>Import 1080 Sprint Data</span>
-            </button>
+              {importDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 flex flex-col gap-1 overflow-hidden">
+                  <button
+                    onClick={() => {
+                      setImportDropdownOpen(false)
+                      setHawkinsStatus(null)
+                      setHawkinsModalOpen(true)
+                    }}
+                    className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
+                  >
+                    <img src="/Hawkins-logo.png" alt="Hawkins" className="w-6 h-6 object-contain" />
+                    <span>From Hawkins</span>
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      setImportDropdownOpen(false)
+                      setTen80Status(null)
+                      setTen80Logs([])
+                      setTen80ModalOpen(true)
+                    }}
+                    className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
+                  >
+                    <img src="/1080-logo.jpg" alt="1080 Motion" className="w-6 h-6 object-contain rounded-sm" />
+                    <span>From 1080 Motion</span>
+                  </button>
 
-            <button
-              onClick={() => {
-                setUploadStatus(null)
-                setUploadModalOpen(true)
-              }}
-              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-slate-400" />
-              <span>General Template Upload</span>
-            </button>
+                  <div className="h-px w-full bg-slate-800/60 my-1"></div>
+
+                  <button
+                    onClick={() => {
+                      setImportDropdownOpen(false)
+                      setUploadStatus(null)
+                      setUploadModalOpen(true)
+                    }}
+                    className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
+                  >
+                    <img src="/Excelologo.png" alt="Excel" className="w-6 h-6 object-contain" />
+                    <span>From Excel Template</span>
+                  </button>
+                </div>
+              )}
+            </div>
 
             <button
               onClick={() => {
@@ -1035,7 +1057,7 @@ export default function CoachDashboard() {
                 />
                 <div className="flex flex-col items-center space-y-3">
                   <div className="p-3 bg-blue-950/40 rounded-full group-hover:bg-blue-900/60 transition">
-                    <Upload className="w-6 h-6 text-blue-400" />
+                    <img src="/Hawkins-logo.png" alt="Hawkins" className="w-8 h-8 object-contain" />
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200">
@@ -1110,7 +1132,7 @@ export default function CoachDashboard() {
                 />
                 <div className="flex flex-col items-center space-y-3">
                   <div className="p-3 bg-orange-950/40 rounded-full group-hover:bg-orange-900/60 transition">
-                    <Upload className="w-6 h-6 text-orange-400" />
+                    <img src="/1080-logo.jpg" alt="1080" className="w-8 h-8 object-contain rounded" />
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200">
@@ -1190,7 +1212,7 @@ export default function CoachDashboard() {
                 />
                 <div className="flex flex-col items-center space-y-3">
                   <div className="p-3 bg-slate-800 rounded-full group-hover:bg-red-950/60 transition">
-                    <Upload className="w-6 h-6 text-slate-400 group-hover:text-red-400" />
+                    <img src="/Excelologo.png" alt="Excel" className="w-8 h-8 object-contain" />
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200">
