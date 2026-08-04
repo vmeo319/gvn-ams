@@ -108,14 +108,15 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
 }
 
 /**
- * 3. ACTION: Parse & Ingest General Metric Rows
+ * 3. ACTION: Parse & Ingest General Metric Rows (Clean Manual Upload)
  */
 export async function uploadMetricRows(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
 
-  // Fetch all profiles once for fast matching
-  const { data: profiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name, weight_lbs')
+  const { data: profiles } = await supabaseAdmin
+    .from('profiles')
+    .select('id, first_name, last_name, weight_lbs')
 
   for (const row of rows) {
     const rawName =
@@ -133,19 +134,13 @@ export async function uploadMetricRows(rows: any[]) {
 
     const matchedProfile = (profiles || []).find((p) => p.id === athleteId)
     const athleteWeightLbs = Number(row.weight_lbs || row['Weight (lbs)'] || matchedProfile?.weight_lbs || 180)
-    const athleteWeightKg = athleteWeightLbs / 2.20462
 
     const testDate = row.test_date || row['Test Date'] || new Date().toISOString().split('T')[0]
-    
-    // Convert absolute Force (N) to Relative Peak Force (N/kg) if raw Newtons (>100) are passed
-    let isoPeakForce = row.iso_peak_force_n || row['ISO Peak Force (N)'] || row['Relative Peak Force (N/kg)']
-    if (isoPeakForce && Number(isoPeakForce) > 150) {
-      isoPeakForce = Number(isoPeakForce) / athleteWeightKg
-    }
 
+    let isoPeakForce = row.iso_belt_squat_peak_force || row.iso_peak_force || row['ISO Peak Force (N/kg)'] || row['Relative Peak Force (BW)']
     const v0Speed = row.v0_speed || row['V0 Speed']
-    const cmjHeight = row.cmj_height_in || row['CMJ Height (in)']
-    const broadJump = row.broad_jump_in || row['Broad Jump (in)']
+    const cmjHeight = row.cmj_height_inches || row.cmj_height_in || row['CMJ Height (in)'] || row['Jump Height']
+    const broadJump = row.broad_jump_inches || row.broad_jump_in || row['Broad Jump (in)']
     const benchVelo = row.bench_velo_ms || row['Bench Velo (m/s)']
     const chinUps = row.chin_ups || row['Chin-ups']
 
@@ -155,7 +150,7 @@ export async function uploadMetricRows(rows: any[]) {
         test_date: testDate,
         iso_belt_squat_peak_force: isoPeakForce ? Number(Number(isoPeakForce).toFixed(2)) : null,
         v0_speed: v0Speed ? Number(v0Speed) : null,
-        cmj_height_inches: cmjHeight ? Number(cmjHeight) : null,
+        cmj_height_inches: cmjHeight ? Number(cmjHeight).toFixed(2) : null,
         broad_jump_inches: broadJump ? Number(broadJump) : null,
         bench_velo_ms: benchVelo ? Number(benchVelo) : null,
         chin_ups: chinUps ? Number(chinUps) : null,

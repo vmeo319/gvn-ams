@@ -4,7 +4,8 @@ import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check } from 'lucide-react'
 import * as XLSX from 'xlsx'
-import { createAthleteAction, uploadMetricRows } from './actions'
+import Papa from 'papaparse'
+import { createAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
 
 interface LeaderboardRecord {
   athlete_id: string
@@ -30,7 +31,6 @@ const GVN_LOCATIONS = [
   'GVN- FVIA',
 ]
 
-// Official GVN North Shore Roster Array
 const NORTH_SHORE_ROSTER = [
   'Robby Drazner', 'Emily Brown', 'Lyndie Lobdell', 'Brooke Hobson', 'Max Itigaki',
   'Will Winemaster', 'Lachlan Getz', 'Dom Rivelli', 'Mike DeAngelo', 'Jack Silich',
@@ -118,7 +118,6 @@ const NICKNAME_MAP: Record<string, string[]> = {
   connor: ['conner', 'connor'],
 }
 
-// Format Excel dates
 const formatExcelDate = (val: any): string => {
   if (typeof val === 'number') {
     const dateObj = new Date(Math.round((val - 25569) * 86400 * 1000))
@@ -148,6 +147,7 @@ export default function CoachDashboard() {
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
   const [ten80ModalOpen, setTen80ModalOpen] = useState(false)
+  const [hawkinsModalOpen, setHawkinsModalOpen] = useState(false)
 
   // Add Athlete Form State
   const [formData, setFormData] = useState({
@@ -168,6 +168,10 @@ export default function CoachDashboard() {
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<{ success?: boolean; msg: string; errors?: string[] } | null>(null)
 
+  // Hawkins Upload State
+  const [hawkinsUploading, setHawkinsUploading] = useState(false)
+  const [hawkinsStatus, setHawkinsStatus] = useState<{ success?: boolean; msg: string; errors?: string[] } | null>(null)
+
   // 1080 Upload State
   const [ten80Uploading, setTen80Uploading] = useState(false)
   const [ten80Logs, setTen80Logs] = useState<string[]>([])
@@ -186,7 +190,6 @@ export default function CoachDashboard() {
     if (error) {
       console.error('Error loading leaderboard:', error.message || error)
     } else {
-      // Map roster list to GVN- North Shore
       const mappedRecords = (records || []).map((r) => {
         const fullName = `${r.first_name || ''} ${r.last_name || ''}`.trim().toLowerCase()
         const isNorthShore = NORTH_SHORE_ROSTER.some((nsName) => {
@@ -241,6 +244,43 @@ export default function CoachDashboard() {
     } else {
       setSelectedLocations([...selectedLocations, loc])
     }
+  }
+
+  // Hawkins Scoreboard CSV Upload Handler
+  const handleHawkinsFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setHawkinsUploading(true)
+    setHawkinsStatus({ msg: 'Parsing Hawkins CSV file...' })
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          const res = await uploadHawkinsScoreboardCSV(results.data)
+          if (res.success) {
+            setHawkinsStatus({
+              success: true,
+              msg: `Import Successful! Uploaded ${res.insertedCount} Hawkins record(s).`,
+              errors: res.errors,
+            })
+            fetchLeaderboard()
+          } else {
+            setHawkinsStatus({
+              success: false,
+              msg: 'Upload failed.',
+              errors: res.errors,
+            })
+          }
+        } catch (err: any) {
+          setHawkinsStatus({ success: false, msg: `Parsing error: ${err.message}` })
+        } finally {
+          setHawkinsUploading(false)
+        }
+      },
+    })
   }
 
   // Robust 1080 Export Processor
@@ -577,7 +617,6 @@ export default function CoachDashboard() {
     XLSX.writeFile(workbook, 'GVN_Metrics_Upload_Template.xlsx')
   }
 
-  // Filter Data by Search Term AND Multi-selected Locations
   const filteredData = data.filter((a) => {
     const nameMatch = `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
     const locationMatch =
@@ -599,6 +638,18 @@ export default function CoachDashboard() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            {/* Hawkins Upload Button */}
+            <button
+              onClick={() => {
+                setHawkinsStatus(null)
+                setHawkinsModalOpen(true)
+              }}
+              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2.5 rounded-lg transition shadow-lg shadow-blue-600/20"
+            >
+              <Upload className="w-4 h-4" />
+              <span>Import Hawkins CSV</span>
+            </button>
+
             <button
               onClick={() => {
                 setTen80Status(null)
@@ -635,9 +686,8 @@ export default function CoachDashboard() {
           </div>
         </div>
 
-        {/* Filters Bar: Search + Multi-Location Checkbox Selector */}
+        {/* Filters Bar */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-          {/* Search */}
           <div className="relative max-w-md w-full">
             <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
             <input
@@ -649,7 +699,6 @@ export default function CoachDashboard() {
             />
           </div>
 
-          {/* Multi-Location Filter Dropdown */}
           <div className="relative">
             <button
               onClick={() => setLocationDropdownOpen(!locationDropdownOpen)}
@@ -925,7 +974,80 @@ export default function CoachDashboard() {
           </div>
         )}
 
-        {/* MODAL 2: DEDICATED 1080 MOTION SPRINT IMPORT */}
+        {/* MODAL 2: HAWKINS SCOREBOARD CSV UPLOAD */}
+        {hawkinsModalOpen && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6">
+              <div>
+                <h3 className="text-xl font-bold text-white">Import Hawkins Scoreboard CSV</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Upload raw Hawkins exports (.csv). Automatically matches athlete profiles and saves CMJ Jump Height or ISO Belt Squat Force.
+                </p>
+              </div>
+
+              {hawkinsStatus && (
+                <div
+                  className={`p-4 rounded-xl border text-xs space-y-2 ${
+                    hawkinsStatus.success === true
+                      ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+                      : hawkinsStatus.success === false
+                      ? 'bg-red-950/40 border-red-800 text-red-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2 font-medium">
+                    {hawkinsStatus.success === true ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-slate-400" />
+                    )}
+                    <span>{hawkinsStatus.msg}</span>
+                  </div>
+                  {hawkinsStatus.errors && hawkinsStatus.errors.length > 0 && (
+                    <ul className="list-disc pl-5 space-y-1 text-slate-400 text-[11px] max-h-24 overflow-y-auto">
+                      {hawkinsStatus.errors.map((err, idx) => (
+                        <li key={idx}>{err}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              <div className="border-2 border-dashed border-blue-900/60 hover:border-blue-500 rounded-xl p-8 text-center bg-slate-950/40 transition group cursor-pointer relative">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleHawkinsFileUpload}
+                  disabled={hawkinsUploading}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <div className="flex flex-col items-center space-y-3">
+                  <div className="p-3 bg-blue-950/40 rounded-full group-hover:bg-blue-900/60 transition">
+                    <Upload className="w-6 h-6 text-blue-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-200">
+                      {hawkinsUploading ? 'Processing Hawkins CSV...' : 'Click or Drag Hawkins Scoreboard CSV'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Supports scoreboard-Isometric_Test or Jump_Height (.csv)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setHawkinsModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL 3: DEDICATED 1080 MOTION SPRINT IMPORT */}
         {ten80ModalOpen && (
           <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6">
@@ -939,7 +1061,6 @@ export default function CoachDashboard() {
                 </p>
               </div>
 
-              {/* Status Alert */}
               {ten80Status && (
                 <div
                   className={`p-4 rounded-xl border text-xs ${
@@ -959,7 +1080,6 @@ export default function CoachDashboard() {
                 </div>
               )}
 
-              {/* Log Output Console */}
               {ten80Logs.length > 0 && (
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 max-h-32 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-1">
                   {ten80Logs.map((log, i) => (
@@ -968,7 +1088,6 @@ export default function CoachDashboard() {
                 </div>
               )}
 
-              {/* Dropzone */}
               <div className="border-2 border-dashed border-orange-900/60 hover:border-orange-500 rounded-xl p-8 text-center bg-slate-950/40 transition group cursor-pointer relative">
                 <input
                   type="file"
@@ -1003,7 +1122,7 @@ export default function CoachDashboard() {
           </div>
         )}
 
-        {/* MODAL 3: GENERAL TEMPLATE UPLOAD */}
+        {/* MODAL 4: GENERAL TEMPLATE UPLOAD */}
         {uploadModalOpen && (
           <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6">
