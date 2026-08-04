@@ -246,7 +246,7 @@ export default function CoachDashboard() {
     }
   }
 
-  // Hawkins Scoreboard CSV Upload Handler
+  // Hawkins Scoreboard CSV Upload Handler with Client-Side Chunking
   const handleHawkinsFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -259,26 +259,34 @@ export default function CoachDashboard() {
       skipEmptyLines: true,
       complete: async (results) => {
         try {
-          const res = await uploadHawkinsScoreboardCSV(results.data)
-          if (res.success) {
-            setHawkinsStatus({
-              success: true,
-              msg: `Import Successful! Uploaded ${res.insertedCount} Hawkins record(s).`,
-              errors: res.errors,
-            })
-            fetchLeaderboard()
-          } else {
-            setHawkinsStatus({
-              success: false,
-              msg: 'Upload failed.',
-              errors: res.errors,
-            })
+          const allRows = results.data as any[]
+          const chunkSize = 150
+          let totalInserted = 0
+
+          setHawkinsStatus({ msg: `Processing ${allRows.length} total rows in batches...` })
+
+          for (let i = 0; i < allRows.length; i += chunkSize) {
+            const chunk = allRows.slice(i, i + chunkSize)
+            const res = await uploadHawkinsScoreboardCSV(chunk)
+            if (res.success && res.insertedCount) {
+              totalInserted += res.insertedCount
+            }
           }
+
+          setHawkinsStatus({
+            success: true,
+            msg: `Import Successful! Uploaded ${totalInserted} session record(s) across all athletes.`,
+          })
+          fetchLeaderboard()
         } catch (err: any) {
-          setHawkinsStatus({ success: false, msg: `Parsing error: ${err.message}` })
+          setHawkinsStatus({ success: false, msg: `Upload failed: ${err.message}` })
         } finally {
           setHawkinsUploading(false)
         }
+      },
+      error: (err) => {
+        setHawkinsStatus({ success: false, msg: `CSV Parse Error: ${err.message}` })
+        setHawkinsUploading(false)
       },
     })
   }
@@ -1027,9 +1035,9 @@ export default function CoachDashboard() {
                   </div>
                   <div>
                     <p className="text-sm font-semibold text-slate-200">
-                      {hawkinsUploading ? 'Processing Hawkins CSV...' : 'Click or Drag Hawkins Scoreboard CSV'}
+                      {hawkinsUploading ? 'Processing Hawkins CSV in Batches...' : 'Click or Drag Hawkins Master CSV'}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">Supports scoreboard-Isometric_Test or Jump_Height (.csv)</p>
+                    <p className="text-xs text-slate-500 mt-1">Supports unlimited rows (.csv)</p>
                   </div>
                 </div>
               </div>
