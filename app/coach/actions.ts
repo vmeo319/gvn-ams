@@ -28,7 +28,6 @@ export async function createAthleteAction(data: NewAthleteData) {
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
 
-    // Prevent duplicate athlete profiles
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -108,7 +107,46 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
 }
 
 /**
- * 3. ACTION: Parse & Ingest General Metric Rows (Clean Manual Upload)
+ * Helper: Auto-create stub profile for unmapped athletes
+ */
+async function autoCreateAthlete(rawName: string): Promise<string | null> {
+  try {
+    const clean = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
+    const parts = clean.split(' ')
+    const firstName = parts[0] || 'Unknown'
+    const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
+    
+    // Generate a unique placeholder email
+    const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}@gvn-placeholder.com`
+    
+    const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+      email: fakeEmail,
+      password: 'TemporaryPassword123!',
+      email_confirm: true,
+      user_metadata: { first_name: firstName, last_name: lastName },
+    })
+    
+    if (authErr || !authData?.user) return null
+    
+    const userId = authData.user.id
+    
+    await supabaseAdmin.from('profiles').upsert({
+      id: userId,
+      first_name: firstName,
+      last_name: lastName,
+      weight_lbs: 180, // Default weight to prevent absolute force math failures
+      location: 'GVN- North Shore',
+      role: 'athlete'
+    })
+    
+    return userId
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 3. ACTION: Parse & Ingest General Metric Rows
  */
 export async function uploadMetricRows(rows: any[]) {
   let insertedCount = 0
@@ -118,6 +156,8 @@ export async function uploadMetricRows(rows: any[]) {
     .from('profiles')
     .select('id, first_name, last_name, weight_lbs')
 
+  let activeProfiles = profiles || []
+
   for (const row of rows) {
     const rawName =
       row.name ||
@@ -125,14 +165,27 @@ export async function uploadMetricRows(rows: any[]) {
       row['Athlete'] ||
       `${row.first_name || row['First Name'] || ''} ${row.last_name || row['Last Name'] || ''}`.trim()
 
-    const athleteId = findProfileId(rawName, profiles || [])
+    let athleteId = findProfileId(rawName, activeProfiles)
 
-    if (!athleteId) {
-      if (rawName.trim()) errors.push(`Athlete "${rawName}" not found in database.`)
-      continue
+    if (!athleteId && rawName.trim()) {
+      athleteId = await autoCreateAthlete(rawName)
+      if (!athleteId) {
+        errors.push(`Athlete "${rawName}" not found and auto-create failed.`)
+        continue
+      }
+      
+      const parts = rawName.trim().split(' ')
+      activeProfiles.push({
+        id: athleteId,
+        first_name: parts[0] || 'Unknown',
+        last_name: parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown',
+        weight_lbs: 180
+      })
     }
 
-    const matchedProfile = (profiles || []).find((p) => p.id === athleteId)
+    if (!athleteId) continue
+
+    const matchedProfile = activeProfiles.find((p) => p.id === athleteId)
     const athleteWeightLbs = Number(row.weight_lbs || row['Weight (lbs)'] || matchedProfile?.weight_lbs || 180)
 
     const testDate = row.test_date || row['Test Date'] || new Date().toISOString().split('T')[0]
@@ -144,7 +197,6 @@ export async function uploadMetricRows(rows: any[]) {
     const benchVelo = row.bench_velo_ms || row['Bench Velo (m/s)']
     const chinUps = row.chin_ups || row['Chin-ups']
 
-    // Check existing record to avoid ON CONFLICT errors
     const { data: existingRecord } = await supabaseAdmin
       .from('performance_metrics')
       .select('id')
@@ -195,22 +247,35 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
 
-  // Load profiles for athlete name matching
   const { data: profiles } = await supabaseAdmin
     .from('profiles')
     .select('id, first_name, last_name, weight_lbs')
+
+  let activeProfiles = profiles || []
 
   for (const row of rows) {
     const rawName = String(row.Name || row.name || '').trim()
     if (!rawName) continue
 
-    const athleteId = findProfileId(rawName, profiles || [])
+    let athleteId = findProfileId(rawName, activeProfiles)
+
+    // AUTO-CREATE ATHLETE IF MISSING
     if (!athleteId) {
-      errors.push(`Athlete "${rawName}" not found in database.`)
-      continue
+      athleteId = await autoCreateAthlete(rawName)
+      if (!athleteId) {
+        errors.push(`Athlete "${rawName}" not found and auto-create failed.`)
+        continue
+      }
+      
+      const parts = rawName.split(' ')
+      activeProfiles.push({
+        id: athleteId,
+        first_name: parts[0] || 'Unknown',
+        last_name: parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown',
+        weight_lbs: 180
+      })
     }
 
-    // Convert Date from MM/DD/YYYY -> YYYY-MM-DD
     let testDate = new Date().toISOString().split('T')[0]
     const rawDate = row.Date || row.date
     if (rawDate) {
@@ -229,7 +294,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
     let cmjInches: number | null = null
     let isoForceNkg: number | null = null
 
-    // 1. Countermovement Jump (Jump Height)
     if (testType.includes('countermovement') || row['Jump Height'] !== undefined) {
       const rawJump = Number(row['Jump Height'] || row.jump_height)
       if (!isNaN(rawJump) && rawJump > 0) {
@@ -237,7 +301,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       }
     }
 
-    // 2. Isometric Test (Relative Peak Force)
     if (testType.includes('isometric') || row['Relative Peak Force (BW)'] !== undefined) {
       const isExcluded = tags.includes('arm') || tags.includes('single') || tags.includes('bench')
       if (!isExcluded) {
@@ -261,7 +324,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     if (cmjInches === null && isoForceNkg === null) continue
 
-    // Fetch existing record to avoid ON CONFLICT errors
     const { data: existingRecord } = await supabaseAdmin
       .from('performance_metrics')
       .select('id, iso_belt_squat_peak_force, cmj_height_inches')
