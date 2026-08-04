@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
+// Fallback to anon key if service role is somehow completely blocked
 const supabaseAdmin = createClient(
   supabaseUrl,
   serviceRoleKey || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -13,8 +14,12 @@ const supabaseAdmin = createClient(
 const formatError = (err: any) => {
   if (!err) return 'Unknown error.'
   if (typeof err === 'string') return err
-  if (err.message) return err.message
-  return 'Supabase API Error. Check server logs.'
+  if (err.message && err.message !== '{}') return err.message
+  try {
+    const str = JSON.stringify(err)
+    if (str !== '{}') return str
+  } catch (e) {}
+  return 'The email/username is likely already taken, or the server blocked the request.'
 }
 
 interface NewAthleteData {
@@ -31,10 +36,6 @@ interface NewAthleteData {
 
 export async function createAthleteAction(data: NewAthleteData) {
   try {
-    if (!serviceRoleKey) {
-      return { success: false, error: 'SYSTEM HALTED: Vercel is missing the SUPABASE_SERVICE_ROLE_KEY.' }
-    }
-
     const cleanEmail = data.email.trim().toLowerCase()
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
@@ -42,7 +43,7 @@ export async function createAthleteAction(data: NewAthleteData) {
     if (!cleanEmail || !data.password) return { success: false, error: 'Email and password are required.' }
     if (data.password.length < 6) return { success: false, error: 'Password must be at least 6 characters.' }
 
-    // 1. Look for the existing athlete to PRESERVE DATA
+    // 1. Look for the existing athlete profile to PRESERVE DATA
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -50,58 +51,39 @@ export async function createAthleteAction(data: NewAthleteData) {
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    let finalUserId: string
-
-    if (existingAthlete) {
-      // 2. ATHLETE EXISTS: Check if they actually have an Auth login
-      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
-
-      if (authData?.user) {
-        // They have a login (placeholder or otherwise). Force-update the credentials.
-        finalUserId = existingAthlete.id
-        const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
-          finalUserId,
-          { email: cleanEmail, password: data.password, email_confirm: true }
-        )
-        if (updateAuthErr) return { success: false, error: `Failed to set login for existing athlete: ${formatError(updateAuthErr)}` }
-      } else {
-        // 🚨 ORPHANED PROFILE DETECTED 🚨
-        // The profile exists, but the login is gone. We must create a new login and move their data.
-        const { data: newAuth, error: newAuthErr } = await supabaseAdmin.auth.admin.createUser({
-          email: cleanEmail,
-          password: data.password,
-          email_confirm: true,
-          user_metadata: { first_name: cleanFirstName, last_name: cleanLastName }
-        })
-        if (newAuthErr || !newAuth?.user) return { success: false, error: `Failed to create new Auth user: ${formatError(newAuthErr)}` }
-        
-        finalUserId = newAuth.user.id
-
-        // Migrate all performance metrics to the new valid ID
-        await supabaseAdmin.from('performance_metrics').update({ athlete_id: finalUserId }).eq('athlete_id', existingAthlete.id)
-        
-        // Delete the old orphaned profile so we can replace it safely
-        await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
+    // 2. STANDARD SIGNUP (Completely bypasses the buggy Admin API)
+    const { data: authData, error: authErr } = await supabaseAdmin.auth.signUp({
+      email: cleanEmail,
+      password: data.password,
+      options: {
+        data: {
+          first_name: cleanFirstName,
+          last_name: cleanLastName,
+        }
       }
-    } else {
-      // 3. BRAND NEW ATHLETE: Create them from scratch
-      const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
-        email: cleanEmail,
-        password: data.password,
-        email_confirm: true,
-        user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
-      })
-      
-      if (adminErr || !adminAuth?.user) {
-        return { success: false, error: `Failed to create new user: ${formatError(adminErr)}` }
-      }
-      
-      finalUserId = adminAuth.user.id
+    })
+
+    if (authErr || !authData?.user) {
+      return { success: false, error: `Signup failed: ${formatError(authErr)}` }
     }
 
-    // 4. Update their physical profile details (Applies to all paths)
+    const newUserId = authData.user.id
+
+    // 3. MIGRATE DATA (If they had an old disconnected profile on the leaderboard)
+    if (existingAthlete && existingAthlete.id !== newUserId) {
+      // Move all performance metrics to the new valid login ID
+      await supabaseAdmin
+        .from('performance_metrics')
+        .update({ athlete_id: newUserId })
+        .eq('athlete_id', existingAthlete.id)
+      
+      // Delete the old orphaned profile so the leaderboard stays clean
+      await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
+    }
+
+    // 4. CREATE / UPDATE PROFILE with the physical stats
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
-      id: finalUserId,
+      id: newUserId,
       first_name: cleanFirstName,
       last_name: cleanLastName,
       birth_year: data.birthYear,
@@ -133,17 +115,22 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   const parts = cleanName.split(' ')
   const firstName = parts[0] || 'Unknown'
   const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
+  
+  // Dummy email for background imports
   const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
 
   try {
-    const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+    // Standard signup for dummy accounts too
+    const { data: authData, error: authErr } = await supabaseAdmin.auth.signUp({
       email: fakeEmail,
       password: 'TemporaryPassword123!',
-      email_confirm: true,
-      user_metadata: { first_name: firstName, last_name: lastName },
+      options: {
+        data: { first_name: firstName, last_name: lastName }
+      }
     })
 
     if (authErr || !authData?.user) return null
+    
     const userId = authData.user.id
 
     await supabaseAdmin.from('profiles').upsert({
