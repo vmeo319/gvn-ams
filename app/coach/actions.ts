@@ -19,6 +19,9 @@ interface NewAthleteData {
   location?: string
 }
 
+/**
+ * 1. ACTION: Create or Upgrade Athlete Profile
+ */
 export async function createAthleteAction(data: NewAthleteData) {
   try {
     const cleanEmail = data.email.trim().toLowerCase()
@@ -33,17 +36,60 @@ export async function createAthleteAction(data: NewAthleteData) {
       .maybeSingle()
 
     if (existingAthlete) {
-      return {
-        success: false,
-        error: `An athlete named "${cleanFirstName} ${cleanLastName}" already exists.`,
+      // Fetch the user's auth account to check if it's a placeholder
+      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
+      
+      if (authData?.user) {
+        const currentEmail = authData.user.email || ''
+        
+        // If they have a placeholder email, upgrade them to a real account
+        if (currentEmail.includes('@gvn-placeholder.com')) {
+          const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+            existingAthlete.id,
+            {
+              email: cleanEmail,
+              password: data.password,
+              email_confirm: true,
+              user_metadata: {
+                first_name: cleanFirstName,
+                last_name: cleanLastName,
+              }
+            }
+          )
+          
+          if (updateAuthErr) return { success: false, error: updateAuthErr.message }
+
+          // Update their physical stats while we're at it
+          await supabaseAdmin
+            .from('profiles')
+            .update({
+              birth_year: data.birthYear,
+              position: data.position,
+              height_inches: data.heightInches,
+              weight_lbs: data.weightLbs,
+              location: data.location || 'GVN- North Shore',
+            })
+            .eq('id', existingAthlete.id)
+
+          return { success: true }
+        } else {
+          return {
+            success: false,
+            error: `An athlete named "${cleanFirstName} ${cleanLastName}" already has an active account.`,
+          }
+        }
       }
     }
 
+    // If no existing athlete is found, create a brand new one
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password: data.password,
       email_confirm: true,
-      user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
+      user_metadata: {
+        first_name: cleanFirstName,
+        last_name: cleanLastName,
+      },
     })
 
     if (authError) return { success: false, error: authError.message }
@@ -76,6 +122,9 @@ export async function createAthleteAction(data: NewAthleteData) {
   }
 }
 
+/**
+ * 2. Helper: Strict Name Matcher
+ */
 function findProfileId(rawName: string, profiles: any[]): string | null {
   if (!rawName) return null
   const clean = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -97,6 +146,9 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
   return match ? match.id : null
 }
 
+/**
+ * Helper: Quick stub creator for unmapped athletes
+ */
 async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, string>): Promise<string | null> {
   const cleanName = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
   const lowerKey = cleanName.toLowerCase()
@@ -137,6 +189,9 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   }
 }
 
+/**
+ * 3. ACTION: Parse & Ingest General Metric Rows
+ */
 export async function uploadMetricRows(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
