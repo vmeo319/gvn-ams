@@ -18,7 +18,7 @@ const formatError = (err: any) => {
     const str = JSON.stringify(err)
     if (str !== '{}') return str
   } catch (e) {}
-  return 'Supabase API 500 Error: Database trigger failed or SMTP limit reached.'
+  return 'Supabase API 500 Error: Server timeout or email rate limit exceeded.'
 }
 
 interface NewAthleteData {
@@ -35,25 +35,18 @@ interface NewAthleteData {
 
 export async function createAthleteAction(data: NewAthleteData) {
   try {
-    // 🛑 HARD SAFETY CHECK: Prove Vercel has the key
     if (!serviceRoleKey) {
-      return { 
-        success: false, 
-        error: 'SYSTEM HALTED: The SUPABASE_SERVICE_ROLE_KEY is completely missing. If you added it to Vercel, YOU MUST REDEPLOY the project in Vercel for it to take effect.' 
-      }
+      return { success: false, error: 'SYSTEM HALTED: Vercel is missing the SUPABASE_SERVICE_ROLE_KEY.' }
     }
 
     const cleanEmail = data.email.trim().toLowerCase()
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
 
-    if (!cleanEmail || !data.password) {
-      return { success: false, error: 'Email and password are required.' }
-    }
-    if (data.password.length < 6) {
-      return { success: false, error: 'Password must be at least 6 characters long.' }
-    }
+    if (!cleanEmail || !data.password) return { success: false, error: 'Email and password are required.' }
+    if (data.password.length < 6) return { success: false, error: 'Password must be at least 6 characters.' }
 
+    // Check if the athlete exists in profiles
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -61,34 +54,40 @@ export async function createAthleteAction(data: NewAthleteData) {
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    let newUserId: string | undefined
+    let finalUserId: string | undefined
 
-    const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
-      email: cleanEmail,
-      password: data.password,
-      email_confirm: true,
-      user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
-    })
+    if (existingAthlete) {
+      // 1. UPGRADE EXISTING PLACEHOLDER
+      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
+      const currentEmail = authData?.user?.email || ''
 
-    if (!adminErr && adminAuth?.user) {
-      newUserId = adminAuth.user.id
+      if (currentEmail.includes('@gvn-placeholder.com')) {
+        const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+          existingAthlete.id,
+          { email: cleanEmail, password: data.password, email_confirm: true }
+        )
+        if (updateAuthErr) return { success: false, error: `Failed to upgrade email: ${formatError(updateAuthErr)}` }
+        finalUserId = existingAthlete.id
+      } else {
+        return { success: false, error: `An active account for "${cleanFirstName} ${cleanLastName}" already exists.` }
+      }
     } else {
-      const { data: standardAuth, error: standardErr } = await supabaseAdmin.auth.signUp({
+      // 2. CREATE BRAND NEW USER
+      const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
         email: cleanEmail,
         password: data.password,
-        options: { data: { first_name: cleanFirstName, last_name: cleanLastName } }
+        email_confirm: true,
+        user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
       })
-      
-      if (standardErr || !standardAuth?.user) {
-        return { success: false, error: `Admin Error: ${formatError(adminErr)} | Fallback Error: ${formatError(standardErr)}` }
-      }
-      newUserId = standardAuth.user.id
+      if (adminErr || !adminAuth?.user) return { success: false, error: `Failed to create user: ${formatError(adminErr)}` }
+      finalUserId = adminAuth.user.id
     }
 
-    if (!newUserId) return { success: false, error: 'Failed to generate a user ID.' }
+    if (!finalUserId) return { success: false, error: 'Failed to establish user ID.' }
 
+    // Update their profile details
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
-      id: newUserId,
+      id: finalUserId,
       first_name: cleanFirstName,
       last_name: cleanLastName,
       birth_year: data.birthYear,
@@ -101,17 +100,15 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     if (profileError) return { success: false, error: formatError(profileError) }
 
-    if (existingAthlete && existingAthlete.id !== newUserId) {
-      await supabaseAdmin.from('performance_metrics').update({ athlete_id: newUserId }).eq('athlete_id', existingAthlete.id)
-      await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
-      try { await supabaseAdmin.auth.admin.deleteUser(existingAthlete.id) } catch (e) { }
-    }
-
     return { success: true }
   } catch (err: any) {
     return { success: false, error: formatError(err) }
   }
 }
+
+// ============================================================================
+// HELPER FUNCTIONS & UPLOADS
+// ============================================================================
 
 function findProfileId(rawName: string, profiles: any[]): string | null {
   if (!rawName) return null
@@ -150,17 +147,8 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
       user_metadata: { first_name: firstName, last_name: lastName },
     })
 
-    if (authErr || !authData?.user) {
-      const { data: fallbackAuth } = await supabaseAdmin.auth.signUp({
-        email: fakeEmail,
-        password: 'TemporaryPassword123!',
-        options: { data: { first_name: firstName, last_name: lastName } }
-      })
-      if (!fallbackAuth?.user) return null
-      userId = fallbackAuth.user.id
-    } else {
-      userId = authData.user.id
-    }
+    if (authErr || !authData?.user) return null
+    userId = authData.user.id
 
     await supabaseAdmin.from('profiles').upsert({
       id: userId,
