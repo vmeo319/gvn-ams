@@ -168,3 +168,100 @@ export async function uploadMetricRows(rows: any[]) {
 
   return { success: true, insertedCount, errors }
 }
+/**
+ * ACTION: Parse & Ingest Hawkins "Scoreboard" CSV Exports
+ */
+export async function uploadHawkinsScoreboardCSV(rows: any[]) {
+  let insertedCount = 0
+  let errors: string[] = []
+
+  // Load profiles for athlete name matching
+  const { data: profiles } = await supabaseAdmin
+    .from('profiles')
+    .select('id, first_name, last_name, weight_lbs')
+
+  for (const row of rows) {
+    const rawName = String(row.Name || row.name || '').trim()
+    if (!rawName) continue
+
+    const athleteId = findProfileId(rawName, profiles || [])
+    if (!athleteId) {
+      errors.push(`Athlete "${rawName}" not found in database.`)
+      continue
+    }
+
+    // Convert Date from MM/DD/YYYY -> YYYY-MM-DD
+    let testDate = new Date().toISOString().split('T')[0]
+    const rawDate = row.Date || row.date
+    if (rawDate) {
+      const parts = String(rawDate).trim().split('/')
+      if (parts.length === 3) {
+        const [m, d, y] = parts
+        testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+      } else if (rawDate.includes('-')) {
+        testDate = rawDate
+      }
+    }
+
+    const testType = String(row.Type || row.type || '').toLowerCase()
+    const tags = String(row.Tags || row.tags || '').toLowerCase()
+
+    let cmjInches: number | null = null
+    let isoForceNkg: number | null = null
+
+    // 1. Countermovement Jump (Jump Height)
+    if (testType.includes('countermovement') || row['Jump Height'] !== undefined) {
+      const rawJump = Number(row['Jump Height'] || row.jump_height)
+      if (!isNaN(rawJump) && rawJump > 0) {
+        cmjInches = Number(rawJump.toFixed(2))
+      }
+    }
+
+    // 2. Isometric Test (Relative Peak Force)
+    if (testType.includes('isometric') || row['Relative Peak Force (BW)'] !== undefined) {
+      // Exclude single-leg, bench, or arm swing tags if present
+      const isExcluded = tags.includes('arm') || tags.includes('single') || tags.includes('bench')
+      if (!isExcluded) {
+        const rawForce = Number(
+          row['Relative Peak Force (BW)'] ||
+          row['Relative Peak Force (N/kg)'] ||
+          row.relative_peak_force
+        )
+
+        if (!isNaN(rawForce) && rawForce > 0) {
+          // Scoreboard CSV outputs direct N/kg (e.g. 39.17 - 98.02 N/kg)
+          if (rawForce >= 15.0 && rawForce <= 150.0) {
+            isoForceNkg = Number(rawForce.toFixed(2))
+          } else if (rawForce < 2.0) {
+            isoForceNkg = Number((rawForce * 98.0665).toFixed(2))
+          } else if (rawForce < 15.0) {
+            isoForceNkg = Number((rawForce * 9.80665).toFixed(2))
+          }
+        }
+      }
+    }
+
+    if (cmjInches === null && isoForceNkg === null) continue
+
+    // Build payload dynamically so we don't overwrite existing metric values with null
+    const updatePayload: Record<string, any> = {
+      athlete_id: athleteId,
+      test_date: testDate,
+    }
+
+    if (cmjInches !== null) updatePayload.cmj_height_inches = cmjInches
+    if (isoForceNkg !== null) updatePayload.iso_belt_squat_peak_force = isoForceNkg
+
+    const { error } = await supabaseAdmin
+      .from('performance_metrics')
+      .upsert(updatePayload, { onConflict: 'athlete_id, test_date' })
+
+    if (error) {
+      errors.push(`Error saving metric for "${rawName}": ${error.message}`)
+    } else {
+      insertedCount++
+    }
+  }
+
+  return { success: true, insertedCount, errors }
+}
