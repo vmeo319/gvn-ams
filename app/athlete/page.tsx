@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs'
+import { supabase } from '@/lib/supabaseClient'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 
 interface Metric {
@@ -15,7 +15,7 @@ export default function AthletePage() {
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedMetric, setSelectedMetric] = useState<'iso' | 'v0' | 'cmj'>('iso')
-  const supabase = createClientComponentClient()
+
 
   useEffect(() => {
     async function loadAthleteData() {
