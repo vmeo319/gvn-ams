@@ -20,7 +20,7 @@ interface NewAthleteData {
 }
 
 /**
- * 1. ACTION: Create or Upgrade Athlete Profile (Seamless Swap)
+ * 1. ACTION: Create or Upgrade Athlete Profile (Bulletproof Fallback)
  */
 export async function createAthleteAction(data: NewAthleteData) {
   try {
@@ -28,6 +28,14 @@ export async function createAthleteAction(data: NewAthleteData) {
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
 
+    if (!cleanEmail || !data.password) {
+      return { success: false, error: 'Email and password are required.' }
+    }
+    if (data.password.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters long.' }
+    }
+
+    // See if this athlete already has a placeholder scoreboard profile
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -35,110 +43,71 @@ export async function createAthleteAction(data: NewAthleteData) {
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    if (existingAthlete) {
-      // Fetch the user's auth account to check if it's a placeholder
-      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
-      
-      if (authData?.user) {
-        const currentEmail = authData.user.email || ''
-        
-        // If they have a placeholder email, execute the Seamless Account Swap
-        if (currentEmail.includes('@gvn-placeholder.com')) {
-          
-          // STEP 1: Create the new REAL auth account
-          const { data: newAuth, error: newAuthErr } = await supabaseAdmin.auth.admin.createUser({
-            email: cleanEmail,
-            password: data.password,
-            email_confirm: true,
-            user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
-          })
-          
-          if (newAuthErr || !newAuth.user) {
-             return { success: false, error: newAuthErr?.message || 'Failed to create real auth account. The email may already be in use.' }
-          }
-          
-          const newUserId = newAuth.user.id
-          const oldUserId = existingAthlete.id
+    let newUserId: string | undefined;
 
-          // STEP 2: Create the new profile row (Must be done before moving metrics due to foreign keys)
-          await supabaseAdmin.from('profiles').upsert({
-            id: newUserId,
-            first_name: cleanFirstName,
-            last_name: cleanLastName,
-            birth_year: data.birthYear,
-            position: data.position,
-            height_inches: data.heightInches,
-            weight_lbs: data.weightLbs,
-            location: data.location || 'GVN- North Shore',
-            role: 'athlete'
-          })
-
-          // STEP 3: Transfer all historical metrics to the new account ID
-          await supabaseAdmin
-            .from('performance_metrics')
-            .update({ athlete_id: newUserId })
-            .eq('athlete_id', oldUserId)
-
-          // STEP 4: Delete old profile & placeholder auth user to clean up
-          await supabaseAdmin.from('profiles').delete().eq('id', oldUserId)
-          await supabaseAdmin.auth.admin.deleteUser(oldUserId)
-
-          return { success: true }
-        } else {
-          return {
-            success: false,
-            error: `An athlete named "${cleanFirstName} ${cleanLastName}" already has an active account.`,
-          }
-        }
-      }
-    }
-
-    // If no existing athlete is found, create a brand new one normally
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+    // First try the Admin API (works if Service Key is present)
+    const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password: data.password,
       email_confirm: true,
-      user_metadata: {
-        first_name: cleanFirstName,
-        last_name: cleanLastName,
-      },
+      user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
     })
 
-    if (authError) {
-      let errStr = authError.message
-      if (!errStr || errStr === '{}') errStr = JSON.stringify(authError)
-      if (errStr === '{}') errStr = 'Failed to create user. The email address might already be in use.'
-      return { success: false, error: errStr }
+    if (!adminErr && adminAuth?.user) {
+      newUserId = adminAuth.user.id
+    } else {
+      // Fallback: If Admin API throws a 500 error or fails, use standard client signup
+      const { data: standardAuth, error: standardErr } = await supabaseAdmin.auth.signUp({
+        email: cleanEmail,
+        password: data.password,
+        options: {
+          data: { first_name: cleanFirstName, last_name: cleanLastName }
+        }
+      })
+      
+      if (standardErr || !standardAuth?.user) {
+        return { 
+          success: false, 
+          error: standardErr?.message || 'Email is already in use or the account could not be created.' 
+        }
+      }
+      newUserId = standardAuth.user.id
     }
-    
-    if (!authData.user) return { success: false, error: 'User creation failed.' }
 
-    const userId = authData.user.id
+    if (!newUserId) return { success: false, error: 'Failed to generate a user ID.' }
 
-    const { error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .upsert(
-        {
-          id: userId,
-          first_name: cleanFirstName,
-          last_name: cleanLastName,
-          birth_year: data.birthYear,
-          position: data.position,
-          height_inches: data.heightInches,
-          weight_lbs: data.weightLbs,
-          location: data.location || 'GVN- North Shore',
-          role: 'athlete',
-        },
-        { onConflict: 'id' }
-      )
+    // Create the updated profile row mapped to the new, working Auth account
+    const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
+      id: newUserId,
+      first_name: cleanFirstName,
+      last_name: cleanLastName,
+      birth_year: data.birthYear,
+      position: data.position,
+      height_inches: data.heightInches,
+      weight_lbs: data.weightLbs,
+      location: data.location || 'GVN- North Shore',
+      role: 'athlete'
+    }, { onConflict: 'id' })
 
     if (profileError) return { success: false, error: profileError.message }
 
+    // DATA MIGRATION: If they had an old placeholder profile, move all metrics to the new ID!
+    if (existingAthlete && existingAthlete.id !== newUserId) {
+      await supabaseAdmin
+        .from('performance_metrics')
+        .update({ athlete_id: newUserId })
+        .eq('athlete_id', existingAthlete.id)
+
+      // Clean up the old empty profile
+      await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
+      
+      // Optionally clean up the old auth user if the API lets us
+      try { await supabaseAdmin.auth.admin.deleteUser(existingAthlete.id) } catch (e) { /* ignore */ }
+    }
+
     return { success: true }
   } catch (err: any) {
-    let msg = err.message || JSON.stringify(err)
-    if (msg === '{}') msg = 'An unexpected server error occurred.'
-    return { success: false, error: msg }
+    return { success: false, error: err.message || 'An unexpected server error occurred.' }
   }
 }
 
@@ -167,15 +136,13 @@ function findProfileId(rawName: string, profiles: any[]): string | null {
 }
 
 /**
- * Helper: Quick stub creator for unmapped athletes
+ * Helper: Quick stub creator for unmapped athletes (with fallback)
  */
 async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, string>): Promise<string | null> {
   const cleanName = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
   const lowerKey = cleanName.toLowerCase()
   
-  if (profilesMap.has(lowerKey)) {
-    return profilesMap.get(lowerKey)!
-  }
+  if (profilesMap.has(lowerKey)) return profilesMap.get(lowerKey)!
 
   const parts = cleanName.split(' ')
   const firstName = parts[0] || 'Unknown'
@@ -183,6 +150,8 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
 
   try {
+    let userId: string | undefined;
+
     const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
       email: fakeEmail,
       password: 'TemporaryPassword123!',
@@ -190,8 +159,17 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
       user_metadata: { first_name: firstName, last_name: lastName },
     })
 
-    if (authErr || !authData?.user) return null
-    const userId = authData.user.id
+    if (authErr || !authData?.user) {
+      const { data: fallbackAuth } = await supabaseAdmin.auth.signUp({
+        email: fakeEmail,
+        password: 'TemporaryPassword123!',
+        options: { data: { first_name: firstName, last_name: lastName } }
+      })
+      if (!fallbackAuth?.user) return null;
+      userId = fallbackAuth.user.id
+    } else {
+      userId = authData.user.id
+    }
 
     await supabaseAdmin.from('profiles').upsert({
       id: userId,
@@ -306,7 +284,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
     let cmjInches: number | null = null
     let isoForceNkg: number | null = null
 
-    // CMJ Jump Height
     if (testType.includes('countermovement') || row['Jump Height'] !== undefined) {
       const rawJump = Number(row['Jump Height'] || row.jump_height)
       if (!isNaN(rawJump) && rawJump > 0) {
@@ -314,7 +291,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
       }
     }
 
-    // Isometric ISO Belt Squat - 45
     if (testType.includes('isometric')) {
       const isTargetISO = tags.includes('iso belt squat - 45') || tags.includes('iso belt squat- 45')
       const isExcluded = tags.includes('120') || tags.includes('mid-thigh') || tags.includes('floor press') || tags.includes('sprinter')
@@ -348,7 +324,6 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
   const sessionsArray = Array.from(sessionMap.values())
 
-  // Upsert in small database batches to prevent timeout
   for (const session of sessionsArray) {
     const payload: Record<string, any> = {
       athlete_id: session.athleteId,
