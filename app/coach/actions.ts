@@ -7,6 +7,18 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
+// Helper to prevent blank "{}" errors
+const formatError = (err: any) => {
+  if (!err) return 'Unknown error.'
+  if (typeof err === 'string') return err
+  if (err.message && err.message !== '{}') return err.message
+  try {
+    const str = JSON.stringify(err)
+    if (str !== '{}') return str
+  } catch (e) {}
+  return 'Supabase API 500 Error: Please ensure your SUPABASE_SERVICE_ROLE_KEY is added to your Vercel Environment Variables.'
+}
+
 interface NewAthleteData {
   email: string
   password: string
@@ -43,7 +55,7 @@ export async function createAthleteAction(data: NewAthleteData) {
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    let newUserId: string | undefined;
+    let newUserId: string | undefined
 
     // First try the Admin API (works if Service Key is present)
     const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
@@ -68,7 +80,7 @@ export async function createAthleteAction(data: NewAthleteData) {
       if (standardErr || !standardAuth?.user) {
         return { 
           success: false, 
-          error: standardErr?.message || 'Email is already in use or the account could not be created.' 
+          error: `Admin Error: ${formatError(adminErr)} | Fallback Error: ${formatError(standardErr)}` 
         }
       }
       newUserId = standardAuth.user.id
@@ -89,7 +101,7 @@ export async function createAthleteAction(data: NewAthleteData) {
       role: 'athlete'
     }, { onConflict: 'id' })
 
-    if (profileError) return { success: false, error: profileError.message }
+    if (profileError) return { success: false, error: formatError(profileError) }
 
     // DATA MIGRATION: If they had an old placeholder profile, move all metrics to the new ID!
     if (existingAthlete && existingAthlete.id !== newUserId) {
@@ -107,7 +119,7 @@ export async function createAthleteAction(data: NewAthleteData) {
 
     return { success: true }
   } catch (err: any) {
-    return { success: false, error: err.message || 'An unexpected server error occurred.' }
+    return { success: false, error: formatError(err) }
   }
 }
 
@@ -150,7 +162,7 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
 
   try {
-    let userId: string | undefined;
+    let userId: string | undefined
 
     const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
       email: fakeEmail,
@@ -165,7 +177,7 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
         password: 'TemporaryPassword123!',
         options: { data: { first_name: firstName, last_name: lastName } }
       })
-      if (!fallbackAuth?.user) return null;
+      if (!fallbackAuth?.user) return null
       userId = fallbackAuth.user.id
     } else {
       userId = authData.user.id
