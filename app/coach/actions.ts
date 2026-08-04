@@ -13,12 +13,8 @@ const supabaseAdmin = createClient(
 const formatError = (err: any) => {
   if (!err) return 'Unknown error.'
   if (typeof err === 'string') return err
-  if (err.message && err.message !== '{}') return err.message
-  try {
-    const str = JSON.stringify(err)
-    if (str !== '{}') return str
-  } catch (e) {}
-  return 'Supabase API 500 Error: Server timeout or email rate limit exceeded.'
+  if (err.message) return err.message
+  return 'Supabase API Error. Check server logs.'
 }
 
 interface NewAthleteData {
@@ -46,7 +42,7 @@ export async function createAthleteAction(data: NewAthleteData) {
     if (!cleanEmail || !data.password) return { success: false, error: 'Email and password are required.' }
     if (data.password.length < 6) return { success: false, error: 'Password must be at least 6 characters.' }
 
-    // Check if the athlete exists in profiles
+    // 1. Look for the existing athlete to PRESERVE DATA
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -54,38 +50,37 @@ export async function createAthleteAction(data: NewAthleteData) {
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    let finalUserId: string | undefined
+    let finalUserId: string
 
     if (existingAthlete) {
-      // 1. UPGRADE EXISTING PLACEHOLDER
-      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(existingAthlete.id)
-      const currentEmail = authData?.user?.email || ''
-
-      if (currentEmail.includes('@gvn-placeholder.com')) {
-        const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
-          existingAthlete.id,
-          { email: cleanEmail, password: data.password, email_confirm: true }
-        )
-        if (updateAuthErr) return { success: false, error: `Failed to upgrade email: ${formatError(updateAuthErr)}` }
-        finalUserId = existingAthlete.id
-      } else {
-        return { success: false, error: `An active account for "${cleanFirstName} ${cleanLastName}" already exists.` }
+      // 2. ATHLETE EXISTS: Force-update their login credentials. NO DATA LOSS.
+      finalUserId = existingAthlete.id
+      
+      const { error: updateAuthErr } = await supabaseAdmin.auth.admin.updateUserById(
+        finalUserId,
+        { email: cleanEmail, password: data.password, email_confirm: true }
+      )
+      
+      if (updateAuthErr) {
+        return { success: false, error: `Failed to set login for existing athlete: ${formatError(updateAuthErr)}` }
       }
     } else {
-      // 2. CREATE BRAND NEW USER
+      // 3. BRAND NEW ATHLETE: Create them from scratch
       const { data: adminAuth, error: adminErr } = await supabaseAdmin.auth.admin.createUser({
         email: cleanEmail,
         password: data.password,
         email_confirm: true,
         user_metadata: { first_name: cleanFirstName, last_name: cleanLastName },
       })
-      if (adminErr || !adminAuth?.user) return { success: false, error: `Failed to create user: ${formatError(adminErr)}` }
+      
+      if (adminErr || !adminAuth?.user) {
+        return { success: false, error: `Failed to create new user: ${formatError(adminErr)}` }
+      }
+      
       finalUserId = adminAuth.user.id
     }
 
-    if (!finalUserId) return { success: false, error: 'Failed to establish user ID.' }
-
-    // Update their profile details
+    // 4. Update their physical profile details (Applies to both new and existing)
     const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
       id: finalUserId,
       first_name: cleanFirstName,
@@ -110,22 +105,6 @@ export async function createAthleteAction(data: NewAthleteData) {
 // HELPER FUNCTIONS & UPLOADS
 // ============================================================================
 
-function findProfileId(rawName: string, profiles: any[]): string | null {
-  if (!rawName) return null
-  const clean = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
-  const parts = clean.split(' ')
-  const first = parts[0]
-  const last = parts[parts.length - 1]
-
-  const match = profiles.find((p) => {
-    const pf = (p.first_name || '').trim().toLowerCase()
-    const pl = (p.last_name || '').trim().toLowerCase()
-    return clean === `${pf} ${pl}` || clean === `${pl} ${pf}` || (pf === first && pl === last) || (pf === last && pl === first)
-  })
-
-  return match ? match.id : null
-}
-
 async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, string>): Promise<string | null> {
   const cleanName = rawName.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
   const lowerKey = cleanName.toLowerCase()
@@ -135,11 +114,10 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
   const parts = cleanName.split(' ')
   const firstName = parts[0] || 'Unknown'
   const lastName = parts.length > 1 ? parts.slice(1).join(' ') : 'Unknown'
+  // Generates the background dummy email for data imports
   const fakeEmail = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${Date.now()}_${Math.random().toString(36).substring(2, 7)}@gvn-placeholder.com`
 
   try {
-    let userId: string | undefined
-
     const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
       email: fakeEmail,
       password: 'TemporaryPassword123!',
@@ -148,7 +126,7 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
     })
 
     if (authErr || !authData?.user) return null
-    userId = authData.user.id
+    const userId = authData.user.id
 
     await supabaseAdmin.from('profiles').upsert({
       id: userId,
