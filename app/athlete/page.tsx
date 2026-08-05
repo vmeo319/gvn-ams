@@ -108,7 +108,7 @@ export default function AthletePage() {
         >
           <div className="text-sm font-medium text-slate-400">Max Vertical Jump</div>
           <div className="text-3xl font-bold text-blue-500 mt-1">
-            {maxJump > 0 ? `${maxJump.toFixed(1)} in` : '--'}
+            {maxJump > 0 ? `${maxJump.toFixed(2)} in` : '--'}
           </div>
         </div>
 

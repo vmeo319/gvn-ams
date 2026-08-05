@@ -25,6 +25,24 @@ const API_BASE = "https://publicapi.1080motion.com"
 const MPS_TO_MPH = 2.23694
 const LOAD_TOLERANCE_KG = 0.5 // "2kg" sprints in practice land at 1.5-2.5
 
+// First-name variants that should be treated as the same person (last name must still
+// match exactly). 1080 and the roster don't always agree on which form gets used.
+const NICKNAME_GROUPS: string[][] = [
+  ['nate', 'nathan', 'nathen', 'nathaniel'],
+  ['kenneth', 'kenny', 'ken'],
+  ['socrates', 'sam', 'samuel'],
+]
+const nicknameGroupOf = new Map<string, Set<string>>()
+for (const group of NICKNAME_GROUPS) {
+  const set = new Set(group)
+  for (const name of group) nicknameGroupOf.set(name, set)
+}
+function firstNamesMatch(a: string, b: string): boolean {
+  if (a === b) return true
+  const groupA = nicknameGroupOf.get(a)
+  return !!groupA && groupA.has(b)
+}
+
 function isOffIceSprintProfiling(name: string) {
   return name.trim().toLowerCase() === "off-ice sprint profiling"
 }
@@ -88,19 +106,36 @@ Deno.serve(async (req) => {
       }
 
       const nameToProfileId = new Map<string, string>()
+      const profilesByLastName = new Map<string, { firstName: string; id: string }[]>()
       for (const p of gvnProfiles || []) {
         if (p?.first_name && p?.last_name) {
-          nameToProfileId.set(`${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase(), p.id)
+          const first = p.first_name.trim().toLowerCase()
+          const last = p.last_name.trim().toLowerCase()
+          nameToProfileId.set(`${first} ${last}`, p.id)
+          if (!profilesByLastName.has(last)) profilesByLastName.set(last, [])
+          profilesByLastName.get(last)!.push({ firstName: first, id: p.id })
         }
       }
 
-      // clientId -> gvnProfileId, built from /Client's displayName matched to our roster
+      // clientId -> gvnProfileId, built from /Client's displayName matched to our roster.
+      // Falls back to nickname-equivalent first names (Nate/Nathan/Nathen, Kenneth/Kenny/Ken,
+      // Socrates/Sam) against an exact last-name match when the exact full name doesn't hit.
       const clientIdToProfileId = new Map<string, string>()
       for (const client of ten80Clients) {
-        if (client?.id && client?.displayName) {
-          const profileId = nameToProfileId.get(String(client.displayName).trim().toLowerCase())
-          if (profileId) clientIdToProfileId.set(String(client.id), profileId)
+        if (!client?.id || !client?.displayName) continue
+        const cleanName = String(client.displayName).trim().toLowerCase()
+        let profileId = nameToProfileId.get(cleanName)
+
+        if (!profileId) {
+          const parts = cleanName.split(/\s+/)
+          const clientFirst = parts[0]
+          const clientLast = parts.slice(1).join(' ')
+          const candidates = profilesByLastName.get(clientLast) || []
+          const hit = candidates.find((c) => firstNamesMatch(c.firstName, clientFirst))
+          if (hit) profileId = hit.id
         }
+
+        if (profileId) clientIdToProfileId.set(String(client.id), profileId)
       }
 
       const sessRes = await fetch(`${API_BASE}/Session?maxAgeDays=${lookbackDays}`, { headers: ten80Headers })

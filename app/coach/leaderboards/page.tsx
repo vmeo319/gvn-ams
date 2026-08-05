@@ -41,6 +41,26 @@ function toDateInput(d: Date): string {
   return d.toISOString().split('T')[0]
 }
 
+// Supabase/PostgREST silently caps responses at a default row limit (1000) regardless of
+// how many rows actually match — a wider date range can come back with FEWER rows than a
+// narrower one once the true count crosses that cap, which was producing lower "max"
+// values for wider windows. Page through with .range() until a page comes back short.
+async function fetchAllRows<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>
+): Promise<T[]> {
+  const pageSize = 1000
+  let allRows: T[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await build(from, from + pageSize - 1)
+    if (error || !data) break
+    allRows = allRows.concat(data)
+    if (data.length < pageSize) break
+    from += pageSize
+  }
+  return allRows
+}
+
 export default function LeaderboardsPage() {
   const [metricKey, setMetricKey] = useState('iso')
   const [locations, setLocations] = useState<LocationRow[]>([])
@@ -76,27 +96,33 @@ export default function LeaderboardsPage() {
   const fetchLeaderboard = async () => {
     setLoading(true)
 
-    const { data: profiles } = await supabase
-      .from('profiles')
-      .select('id, first_name, last_name, location_id')
-      .eq('role', 'athlete')
+    const profiles = await fetchAllRows((from, to) =>
+      supabase
+        .from('profiles')
+        .select('id, first_name, last_name, location_id')
+        .eq('role', 'athlete')
+        .range(from, to)
+    )
 
     const profileMap = new Map<string, { name: string; locationId: string | null }>()
-    ;(profiles || []).forEach((p: any) => {
+    profiles.forEach((p: any) => {
       profileMap.set(p.id, { name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), locationId: p.location_id })
     })
 
-    const { data: metricRows } = await supabase
-      .from('performance_metrics')
-      .select(`athlete_id, test_date, ${metric.column}`)
-      .gte('test_date', startDate)
-      .lte('test_date', endDate)
-      .not(metric.column, 'is', null)
+    const metricRows = await fetchAllRows((from, to) =>
+      supabase
+        .from('performance_metrics')
+        .select(`athlete_id, test_date, ${metric.column}`)
+        .gte('test_date', startDate)
+        .lte('test_date', endDate)
+        .not(metric.column, 'is', null)
+        .range(from, to)
+    )
 
     const locationNameMap = new Map(locations.map((l) => [l.id, l.name]))
     const best = new Map<string, RankedAthlete>()
 
-    ;(metricRows || []).forEach((row: any) => {
+    metricRows.forEach((row: any) => {
       const profile = profileMap.get(row.athlete_id)
       if (!profile) return
       if (locationId && profile.locationId !== locationId) return
