@@ -6,10 +6,18 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
   try {
     if (!HAWKINS_REFRESH_TOKEN) {
       return new Response('Missing HAWKINS_API_KEY secret', { status: 500 })
+    }
+
+    let lookbackDays = 90
+    try {
+      const body = await req.json()
+      if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
+    } catch (_) {
+      // Body empty or not JSON — default to 90 days for the steady-state nightly sync.
     }
 
     // 1. Get Access Token
@@ -23,10 +31,11 @@ Deno.serve(async () => {
       return new Response('Failed token', { status: 401 })
     }
 
-    // 2. Fetch 90 days of tests
-    const ninetyDaysAgoUnix = Math.floor(Date.now() / 1000) - 90 * 24 * 60 * 60
+    // 2. Fetch tests since the lookback window (defaults to 90 days; pass a larger
+    // lookbackDays for a one-time historical backfill)
+    const lookbackUnix = Math.floor(Date.now() / 1000) - lookbackDays * 24 * 60 * 60
     const hawkinsRes = await fetch(
-      `https://cloud.hawkindynamics.com/api/v1?syncFrom=${ninetyDaysAgoUnix}`,
+      `https://cloud.hawkindynamics.com/api/v1?syncFrom=${lookbackUnix}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
 

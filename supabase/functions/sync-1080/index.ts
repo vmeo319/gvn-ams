@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const corsHeaders = {
@@ -6,7 +5,34 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-1080-api-key',
 }
 
-serve(async (req) => {
+// Real 1080 Motion public API shape, confirmed against the live API and the official
+// sample client (github.com/1080Motion/API/Samples/webapi-dotnet):
+//   GET /Client                              -> PublicClient[]
+//   GET /Session?maxAgeDays=N                -> SessionInfo[] { id, timestamp, clientId } (this
+//                                                param is honored; the previously-used
+//                                                /Session/Search endpoint ignores every filter
+//                                                param including `take`, and always returns the
+//                                                full org-wide session history)
+//   GET /Session/{id}                        -> PublicSession { id, created, clientId, exercises }
+//                                                exercises[].sets[] here is a lightweight stub
+//                                                (externalLoad always 0) — NOT the real per-rep data
+//   GET /TrainingData/Set/{setId}?includeSamples=false
+//                                             -> PublicSetData { motionGroups[].motions[] }, each
+//                                                motion has resistanceValues.concentricLoad (kg)
+//                                                and topSpeed / peakValues.speed (m/s)
+const API_BASE = "https://publicapi.1080motion.com"
+
+const MPS_TO_MPH = 2.23694
+const LOAD_TOLERANCE_KG = 0.5 // "2kg" sprints in practice land at 1.5-2.5
+
+function isOffIceSprintProfiling(name: string) {
+  return name.trim().toLowerCase() === "off-ice sprint profiling"
+}
+function isTenYardOffIceSprint(name: string) {
+  return name.trim().toLowerCase() === "10yd off-ice sprint"
+}
+
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -24,27 +50,127 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
+    const ten80Headers = { "X-1080-API-Key": ten80ApiKey, "Accept": "application/json" }
 
     let mode = "enqueue"
-    let targetAthleteIndex = 0
+    let lookbackDays = 14
+    let batchSize = 15
 
     try {
       const body = await req.json()
       if (body?.mode) mode = body.mode
-      if (typeof body?.athleteIndex === 'number') targetAthleteIndex = body.athleteIndex
+      if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
+      if (typeof body?.batchSize === 'number') batchSize = body.batchSize
     } catch (_) {
       // Body empty or not JSON
     }
 
     // ==========================================
-    // MODE B: PROCESS 1 QUEUED SESSION DETAIL
+    // MODE: ENQUEUE — find sessions belonging to known GVN athletes, queue new ones
     // ==========================================
-    if (mode === "process_one") {
+    if (mode === "enqueue") {
+      const clientRes = await fetch(`${API_BASE}/Client`, { headers: ten80Headers })
+      if (!clientRes.ok) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Failed to fetch 1080 Clients: HTTP ${clientRes.status}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+      const rawClientsData = await clientRes.json()
+      const ten80Clients = Array.isArray(rawClientsData) ? rawClientsData : (rawClientsData?.items || [])
+
+      const { data: gvnProfiles, error: pErr } = await supabase.from('profiles').select('id, first_name, last_name')
+      if (pErr) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Failed to fetch profiles: ${pErr.message}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+
+      const nameToProfileId = new Map<string, string>()
+      for (const p of gvnProfiles || []) {
+        if (p?.first_name && p?.last_name) {
+          nameToProfileId.set(`${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase(), p.id)
+        }
+      }
+
+      // clientId -> gvnProfileId, built from /Client's displayName matched to our roster
+      const clientIdToProfileId = new Map<string, string>()
+      for (const client of ten80Clients) {
+        if (client?.id && client?.displayName) {
+          const profileId = nameToProfileId.get(String(client.displayName).trim().toLowerCase())
+          if (profileId) clientIdToProfileId.set(String(client.id), profileId)
+        }
+      }
+
+      const sessRes = await fetch(`${API_BASE}/Session?maxAgeDays=${lookbackDays}`, { headers: ten80Headers })
+      if (!sessRes.ok) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Failed to fetch Sessions: HTTP ${sessRes.status}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+      const sessions = await sessRes.json()
+
+      const candidateRows: { session_id: string; client_id: string; athlete_id: string; exercise_type: string; status: string }[] = []
+      for (const s of sessions || []) {
+        if (!s?.id || !s?.clientId) continue
+        const profileId = clientIdToProfileId.get(String(s.clientId))
+        if (!profileId) continue
+        candidateRows.push({
+          session_id: String(s.id),
+          client_id: String(s.clientId),
+          athlete_id: profileId,
+          exercise_type: 'sprint_check',
+          status: 'pending',
+        })
+      }
+      const matchedSessionCount = candidateRows.length
+
+      // Bulk upsert in chunks, ignoring rows that already exist (unique constraint on
+      // session_id) — much faster than one insert per row, which was timing out the
+      // function on large lookback windows.
+      let queuedCount = 0
+      const chunkSize = 500
+      for (let i = 0; i < candidateRows.length; i += chunkSize) {
+        const chunk = candidateRows.slice(i, i + chunkSize)
+        const { data: upserted, error: upsertErr } = await supabase
+          .from('ten80_sync_queue')
+          .upsert(chunk, { onConflict: 'session_id', ignoreDuplicates: true })
+          .select('id')
+        if (!upsertErr) queuedCount += upserted?.length || 0
+      }
+
+      const { count: totalPending } = await supabase
+        .from('ten80_sync_queue')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'pending')
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          totalClients: ten80Clients.length,
+          matchedAthletes: clientIdToProfileId.size,
+          sessionsScanned: (sessions || []).length,
+          matchedSessionCount,
+          newlyQueued: queuedCount,
+          totalPendingInQueue: totalPending || 0,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // ==========================================
+    // MODE: PROCESS_BATCH — pull a batch of queued sessions and write real metrics
+    // ==========================================
+    if (mode === "process_one" || mode === "process_batch") {
+      const limit = mode === "process_one" ? 1 : batchSize
+
       const { data: queueItems, error: qErr } = await supabase
         .from('ten80_sync_queue')
         .select('*')
         .eq('status', 'pending')
-        .limit(1)
+        .limit(limit)
 
       if (qErr) {
         return new Response(
@@ -60,106 +186,102 @@ serve(async (req) => {
         )
       }
 
-      const currentItem = queueItems[0]
+      let processedCount = 0
+      let metricsWrittenCount = 0
+      const errors: string[] = []
 
-      const sessRes = await fetch(`https://publicapi.1080motion.com/Session/${currentItem.session_id}`, {
-        headers: { "X-1080-API-Key": ten80ApiKey, "Accept": "application/json" }
-      })
+      for (const item of queueItems) {
+        try {
+          const sessRes = await fetch(`${API_BASE}/Session/${item.session_id}`, { headers: ten80Headers })
+          if (!sessRes.ok) {
+            await supabase.from('ten80_sync_queue').update({ status: 'failed' }).eq('id', item.id)
+            errors.push(`${item.session_id}: session fetch HTTP ${sessRes.status}`)
+            continue
+          }
+          const sessionDetail = await sessRes.json()
+          const testDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : new Date().toISOString().split('T')[0]
 
-      if (!sessRes.ok) {
-        await supabase.from('ten80_sync_queue').update({ status: 'failed' }).eq('id', currentItem.id)
-        return new Response(
-          JSON.stringify({ success: false, error: `Failed to fetch session detail (HTTP ${sessRes.status})` }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-        )
-      }
+          const v0RepPoints: { loadKg: number; speedMps: number }[] = []
+          let topSpeed2kgMps = 0
 
-      const sessionDetail = await sessRes.json()
-      const exercises = sessionDetail?.exercises || []
-      const MPS_TO_MPH = 2.23694
-      let importedMetricId = null
+          for (const ex of sessionDetail?.exercises || []) {
+            const exName = ex?.exerciseTypeName || ex?.name || ""
+            const wantsV0 = isOffIceSprintProfiling(exName)
+            const wantsTopSpeed = isTenYardOffIceSprint(exName)
+            if (!wantsV0 && !wantsTopSpeed) continue
 
-      for (const ex of exercises) {
-        const exName = (ex?.exerciseTypeName || ex?.name || "").toLowerCase()
-        const isV0 = exName.includes("off-ice sprint profiling") || exName.includes("sprint profiling")
-        const is10Yd = exName.includes("10yd off-ice sprint") || exName.includes("10yd sprint")
+            for (const setRef of ex?.sets || []) {
+              if (!setRef?.id) continue
+              const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=false`, { headers: ten80Headers })
+              if (!setRes.ok) continue
+              const setData = await setRes.json()
 
-        if (!isV0 && !is10Yd) continue // Strict sprint filter
+              for (const mg of setData?.motionGroups || []) {
+                for (const motion of mg?.motions || []) {
+                  const loadKg = Number(motion?.resistanceValues?.concentricLoad)
+                  const speedMps = Number(motion?.topSpeed ?? motion?.peakValues?.speed)
+                  if (isNaN(speedMps) || speedMps <= 0) continue
 
-        const sets = ex?.sets || []
-        let maxSpeedMps = 0
-        const repPoints: { loadKg: number; speedMps: number }[] = []
-
-        for (const sRef of sets) {
-          if (!sRef?.id) continue
-
-          const setRes = await fetch(`https://publicapi.1080motion.com/Set/${sRef.id}`, {
-            headers: { "X-1080-API-Key": ten80ApiKey, "Accept": "application/json" }
-          })
-
-          if (setRes.ok) {
-            const setDetail = await setRes.json()
-            const processSpeed = (item: any) => {
-              if (!item) return
-              const speed = item?.peakValues?.speed || item?.peakSpeed || item?.topSpeed || item?.speed || item?.maxSpeed || 0
-              const load = item?.concentricLoad || item?.load || setDetail?.externalLoad || 2.0
-              if (speed > maxSpeedMps) maxSpeedMps = speed
-              if (speed > 0) repPoints.push({ loadKg: Number(load) || 2.0, speedMps: speed })
-            }
-
-            processSpeed(setDetail)
-            const subArrays = [setDetail?.reps, setDetail?.motionGroups, setDetail?.motions]
-            for (const arr of subArrays) {
-              if (Array.isArray(arr)) {
-                for (const sub of arr) {
-                  processSpeed(sub)
-                  if (Array.isArray(sub?.motions)) sub.motions.forEach(processSpeed)
+                  if (wantsV0 && !isNaN(loadKg)) {
+                    v0RepPoints.push({ loadKg, speedMps })
+                  }
+                  if (wantsTopSpeed && !isNaN(loadKg) && Math.abs(loadKg - 2) <= LOAD_TOLERANCE_KG) {
+                    if (speedMps > topSpeed2kgMps) topSpeed2kgMps = speedMps
+                  }
                 }
               }
             }
           }
-        }
 
-        // Theoretical V0 Calculation via Linear Regression
-        let calculatedV0Mps = maxSpeedMps
-        if (isV0 && repPoints.length >= 2) {
-          const n = repPoints.length
-          let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
-          for (const pt of repPoints) {
-            sumX += pt.loadKg
-            sumY += pt.speedMps
-            sumXY += pt.loadKg * pt.speedMps
-            sumXX += pt.loadKg * pt.loadKg
+          // Theoretical V0 via load-velocity linear regression (intercept at zero load)
+          let v0Mps: number | null = null
+          if (v0RepPoints.length >= 2) {
+            const n = v0RepPoints.length
+            let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0
+            let maxObservedSpeed = 0
+            for (const pt of v0RepPoints) {
+              sumX += pt.loadKg
+              sumY += pt.speedMps
+              sumXY += pt.loadKg * pt.speedMps
+              sumXX += pt.loadKg * pt.loadKg
+              if (pt.speedMps > maxObservedSpeed) maxObservedSpeed = pt.speedMps
+            }
+            const denom = n * sumXX - sumX * sumX
+            if (denom !== 0) {
+              const slope = (n * sumXY - sumX * sumY) / denom
+              const intercept = (sumY - slope * sumX) / n
+              v0Mps = intercept > maxObservedSpeed ? intercept : maxObservedSpeed
+            } else {
+              v0Mps = maxObservedSpeed
+            }
+          } else if (v0RepPoints.length === 1) {
+            v0Mps = v0RepPoints[0].speedMps
           }
-          const denom = (n * sumXX - sumX * sumX)
-          if (denom !== 0) {
-            const slope = (n * sumXY - sumX * sumY) / denom
-            const intercept = (sumY - slope * sumX) / n
-            if (intercept > maxSpeedMps) calculatedV0Mps = intercept
+
+          // Only include fields we actually computed, so the upsert merges rather than
+          // nulling out whichever metric the OTHER exercise in this session reported.
+          const payload: Record<string, any> = { athlete_id: item.athlete_id, test_date: testDate }
+          if (v0Mps !== null) payload.v0_speed = Number((v0Mps * MPS_TO_MPH).toFixed(2))
+          if (topSpeed2kgMps > 0) payload.top_speed = Number((topSpeed2kgMps * MPS_TO_MPH).toFixed(2))
+
+          if (payload.v0_speed !== undefined || payload.top_speed !== undefined) {
+            const { error: upsertErr } = await supabase
+              .from('performance_metrics')
+              .upsert(payload, { onConflict: 'athlete_id, test_date' })
+            if (upsertErr) {
+              errors.push(`${item.session_id}: upsert failed - ${upsertErr.message}`)
+            } else {
+              metricsWrittenCount++
+            }
           }
-        }
 
-        const maxSpeedMph = Number((maxSpeedMps * MPS_TO_MPH).toFixed(2))
-        const calculatedV0Mph = Number((calculatedV0Mps * MPS_TO_MPH).toFixed(2))
-
-        if (maxSpeedMph > 0) {
-          const testDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : new Date().toISOString().split('T')[0]
-
-          const { data: inserted } = await supabase
-            .from('performance_metrics')
-            .insert({
-              athlete_id: currentItem.athlete_id,
-              test_date: testDate,
-              v0_speed: isV0 ? calculatedV0Mph : null,
-              top_speed: is10Yd ? maxSpeedMph : null
-            })
-            .select('id')
-
-          importedMetricId = inserted?.[0]?.id || null
+          await supabase.from('ten80_sync_queue').update({ status: 'completed' }).eq('id', item.id)
+          processedCount++
+        } catch (itemErr: any) {
+          await supabase.from('ten80_sync_queue').update({ status: 'failed' }).eq('id', item.id)
+          errors.push(`${item.session_id}: ${itemErr?.message || String(itemErr)}`)
         }
       }
-
-      await supabase.from('ten80_sync_queue').update({ status: 'completed' }).eq('id', currentItem.id)
 
       const { count: remainingCount } = await supabase
         .from('ten80_sync_queue')
@@ -169,131 +291,19 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           success: true,
-          processedSessionId: currentItem.session_id,
-          importedMetricId,
-          remainingInQueue: remainingCount || 0
+          processedCount,
+          metricsWrittenCount,
+          remainingInQueue: remainingCount || 0,
+          errors: errors.slice(0, 10),
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
     }
-
-    // ==========================================
-    // MODE A: ENQUEUE PENDING SESSIONS (SAFE MATCH)
-    // ==========================================
-    const clientRes = await fetch("https://publicapi.1080motion.com/Client", {
-      headers: { "X-1080-API-Key": ten80ApiKey }
-    })
-
-    if (!clientRes.ok) {
-      return new Response(
-        JSON.stringify({ success: false, error: `Failed to fetch 1080 Clients: HTTP ${clientRes.status}` }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      )
-    }
-
-    const rawClientsData = await clientRes.json()
-    // Safe normalization of 1080 Clients payload array
-    const ten80Clients = Array.isArray(rawClientsData)
-      ? rawClientsData
-      : (rawClientsData?.items || rawClientsData?.clients || rawClientsData?.data || [])
-
-    const { data: gvnProfiles, error: pErr } = await supabase.from('profiles').select('id, first_name, last_name')
-    if (pErr) {
-      return new Response(
-        JSON.stringify({ success: false, error: `Failed to fetch profiles: ${pErr.message}` }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      )
-    }
-
-    const gvnProfileMap = new Map<string, string>()
-
-    if (Array.isArray(gvnProfiles)) {
-      for (const p of gvnProfiles) {
-        if (p?.first_name && p?.last_name) {
-          gvnProfileMap.set(`${p.first_name.trim()} ${p.last_name.trim()}`.toLowerCase(), p.id)
-        }
-      }
-    }
-
-    const matchedAthletes: { clientId: string; displayName: string; gvnProfileId: string }[] = []
-
-    for (const client of ten80Clients) {
-      if (client?.id && client?.displayName) {
-        const cleanName = String(client.displayName).trim().toLowerCase()
-        const matchedId = gvnProfileMap.get(cleanName)
-        if (matchedId) {
-          matchedAthletes.push({
-            clientId: String(client.id),
-            displayName: String(client.displayName).trim(),
-            gvnProfileId: matchedId
-          })
-        }
-      }
-    }
-
-    if (matchedAthletes.length === 0) {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "No matched athletes found between 1080 Motion clients and Supabase profiles.",
-          total1080ClientsFound: ten80Clients.length,
-          totalSupabaseProfilesFound: gvnProfiles?.length || 0
-        }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      )
-    }
-
-    // Safely select athlete at target index
-    const safeIndex = targetAthleteIndex % matchedAthletes.length
-    const currentAthlete = matchedAthletes[safeIndex]
-
-    if (!currentAthlete || !currentAthlete.clientId) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Invalid athlete object extracted." }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-      )
-    }
-
-    let queuedForAthlete = 0
-
-    const sessRes = await fetch(`https://publicapi.1080motion.com/Session/Search?clientId=${currentAthlete.clientId}&take=10`, {
-      headers: { "X-1080-API-Key": ten80ApiKey, "Accept": "application/json" }
-    })
-
-    if (sessRes.ok) {
-      const sessData = await sessRes.json()
-      const sessions = Array.isArray(sessData) ? sessData : (sessData?.items || sessData?.sessions || [])
-
-      for (const s of sessions) {
-        if (!s?.id) continue
-        const { error: insertErr } = await supabase.from('ten80_sync_queue').insert({
-          session_id: String(s.id),
-          client_id: currentAthlete.clientId,
-          athlete_id: currentAthlete.gvnProfileId,
-          exercise_type: 'sprint_check',
-          status: 'pending'
-        })
-        if (!insertErr) queuedForAthlete++
-      }
-    }
-
-    const { count: totalPending } = await supabase
-      .from('ten80_sync_queue')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'pending')
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        seededAthlete: currentAthlete.displayName,
-        nextAthleteIndex: safeIndex + 1,
-        matchedAthletesTotal: matchedAthletes.length,
-        newlyQueuedSessions: queuedForAthlete,
-        totalPendingInQueue: totalPending || 0
-      }),
+      JSON.stringify({ success: false, error: `Unknown mode: ${mode}` }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     )
-
   } catch (err: any) {
     const errorMsg = typeof err === 'object' && err !== null && 'message' in err
       ? String(err.message)
