@@ -1,11 +1,13 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { createAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
+import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
 
 interface LeaderboardRecord {
   athlete_id: string
@@ -136,13 +138,20 @@ const formatExcelDate = (val: any): string => {
   return str.split('T')[0].split(' ')[0]
 }
 
+interface LocationRow {
+  id: string
+  name: string
+}
+
 export default function CoachDashboard() {
+  const router = useRouter()
   const [data, setData] = useState<LeaderboardRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false)
   const [importDropdownOpen, setImportDropdownOpen] = useState(false)
+  const [locationOptions, setLocationOptions] = useState<LocationRow[]>([])
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -150,20 +159,27 @@ export default function CoachDashboard() {
   const [ten80ModalOpen, setTen80ModalOpen] = useState(false)
   const [hawkinsModalOpen, setHawkinsModalOpen] = useState(false)
 
-  // Add Athlete Form State
+  // Add / Edit Athlete Form State — only firstName/lastName are required. Everything
+  // else is optional and independent: a coach can set any subset of these at once.
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
     email: '',
-    password: '',
-    birthYear: 2006,
-    position: 'Forward',
-    heightInches: 72,
-    weightLbs: 185,
-    location: 'GVN- North Shore',
+    birthYear: '',
+    position: '',
+    heightInches: '',
+    weightLbs: '',
+    locationId: '',
   })
   const [modalError, setModalError] = useState('')
+  const [modalMessage, setModalMessage] = useState('')
+  const [inviteLink, setInviteLink] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    router.push('/')
+  }
 
   // Upload Metrics State
   const [uploading, setUploading] = useState(false)
@@ -180,7 +196,13 @@ export default function CoachDashboard() {
 
   useEffect(() => {
     fetchLeaderboard()
+    fetchLocations()
   }, [])
+
+  const fetchLocations = async () => {
+    const { data: locs, error } = await supabase.from('locations').select('id, name').order('name')
+    if (!error && locs) setLocationOptions(locs as LocationRow[])
+  }
 
   const fetchLeaderboard = async () => {
     setLoading(true)
@@ -214,29 +236,51 @@ export default function CoachDashboard() {
   const handleCreateAthlete = async (e: React.FormEvent) => {
     e.preventDefault()
     setModalError('')
+    setModalMessage('')
+    setInviteLink('')
     setSubmitting(true)
 
-    const res = await createAthleteAction(formData)
+    const res = await upsertAthleteAction({
+      firstName: formData.firstName,
+      lastName: formData.lastName,
+      email: formData.email || undefined,
+      birthYear: formData.birthYear ? Number(formData.birthYear) : undefined,
+      position: formData.position || undefined,
+      heightInches: formData.heightInches ? Number(formData.heightInches) : undefined,
+      weightLbs: formData.weightLbs ? Number(formData.weightLbs) : undefined,
+      locationId: formData.locationId || undefined,
+    })
+
+    setSubmitting(false)
 
     if (!res.success) {
-      setModalError(res.error || 'Failed to create athlete.')
-      setSubmitting(false)
-    } else {
-      setSubmitting(false)
+      setModalError(res.error || 'Failed to save athlete.')
+      return
+    }
+
+    fetchLeaderboard()
+
+    if (res.inviteLink) {
+      setInviteLink(res.inviteLink)
+      setModalMessage(res.message || '')
+      return
+    }
+
+    setModalMessage(res.message || '')
+    setTimeout(() => {
       setAddModalOpen(false)
+      setModalMessage('')
       setFormData({
         firstName: '',
         lastName: '',
         email: '',
-        password: '',
-        birthYear: 2006,
-        position: 'Forward',
-        heightInches: 72,
-        weightLbs: 185,
-        location: 'GVN- North Shore',
+        birthYear: '',
+        position: '',
+        heightInches: '',
+        weightLbs: '',
+        locationId: '',
       })
-      fetchLeaderboard()
-    }
+    }, 1200)
   }
 
   const toggleLocationSelect = (loc: string) => {
@@ -711,7 +755,31 @@ export default function CoachDashboard() {
               className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2.5 rounded-lg transition shadow-lg shadow-red-600/20"
             >
               <Plus className="w-4 h-4" />
-              <span>Add New Athlete</span>
+              <span>Add / Edit Athlete</span>
+            </button>
+
+            <Link
+              href="/coach/leaderboards"
+              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <Trophy className="w-4 h-4 text-amber-400" />
+              <span>Leaderboards</span>
+            </Link>
+
+            <Link
+              href="/athlete"
+              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <UserCircle2 className="w-4 h-4 text-cyan-400" />
+              <span>Athlete View</span>
+            </Link>
+
+            <button
+              onClick={handleSignOut}
+              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
             </button>
           </div>
         </div>
@@ -867,13 +935,15 @@ export default function CoachDashboard() {
           </div>
         </div>
 
-        {/* MODAL 1: ADD ATHLETE */}
+        {/* MODAL 1: ADD / EDIT ATHLETE */}
         {addModalOpen && (
           <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 max-w-md w-full shadow-2xl space-y-6">
               <div>
-                <h3 className="text-xl font-bold text-white">Add New Athlete</h3>
-                <p className="text-xs text-slate-400 mt-1">Create a profile for leaderboards & individual trendlines.</p>
+                <h3 className="text-xl font-bold text-white">Add / Edit Athlete</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Name is the only required field. If it matches an existing athlete, whatever you fill in below updates their profile instead of creating a duplicate.
+                </p>
               </div>
 
               {modalError && (
@@ -882,6 +952,52 @@ export default function CoachDashboard() {
                 </div>
               )}
 
+              {modalMessage && !inviteLink && (
+                <div className="p-3 bg-emerald-950/60 border border-emerald-800 rounded-lg text-xs text-emerald-300">
+                  {modalMessage}
+                </div>
+              )}
+
+              {inviteLink ? (
+                <div className="space-y-4">
+                  <div className="p-3 bg-emerald-950/60 border border-emerald-800 rounded-lg text-xs text-emerald-300">
+                    {modalMessage}
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-400">Activation Link</label>
+                    <div className="flex gap-2 mt-1">
+                      <input
+                        readOnly
+                        value={inviteLink}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(inviteLink)}
+                        className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 rounded-lg text-xs font-semibold text-slate-200 transition"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1.5">Send this to the athlete yourself (text, email, etc). It lets them set their own password and log in.</p>
+                  </div>
+                  <div className="flex justify-end pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddModalOpen(false)
+                        setInviteLink('')
+                        setModalMessage('')
+                        setFormData({ firstName: '', lastName: '', email: '', birthYear: '', position: '', heightInches: '', weightLbs: '', locationId: '' })
+                      }}
+                      className="bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-lg text-xs transition"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <form onSubmit={handleCreateAthlete} className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -907,23 +1023,23 @@ export default function CoachDashboard() {
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-slate-400">Training Facility / Location</label>
+                  <label className="text-xs font-semibold text-slate-400">Training Facility / Location <span className="text-slate-600">(optional)</span></label>
                   <select
-                    value={formData.location}
-                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    value={formData.locationId}
+                    onChange={(e) => setFormData({ ...formData, locationId: e.target.value })}
                     className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                   >
-                    {GVN_LOCATIONS.map((loc) => (
-                      <option key={loc} value={loc}>{loc}</option>
+                    <option value="">— Leave unchanged —</option>
+                    {locationOptions.map((loc) => (
+                      <option key={loc.id} value={loc.id}>{loc.name}</option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-slate-400">Email Address</label>
+                  <label className="text-xs font-semibold text-slate-400">Email Address <span className="text-slate-600">(optional — gives them a login)</span></label>
                   <input
                     type="email"
-                    required
                     placeholder="athlete@gmail.com"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -931,36 +1047,27 @@ export default function CoachDashboard() {
                   />
                 </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-slate-400">Temporary Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
-                  />
-                </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs font-semibold text-slate-400">Position</label>
+                    <label className="text-xs font-semibold text-slate-400">Position <span className="text-slate-600">(optional)</span></label>
                     <select
                       value={formData.position}
                       onChange={(e) => setFormData({ ...formData, position: e.target.value })}
                       className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                     >
+                      <option value="">— Leave unchanged —</option>
                       <option value="Forward">Forward</option>
                       <option value="Defense">Defense</option>
                       <option value="Goalie">Goalie</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-xs font-semibold text-slate-400">Birth Year</label>
+                    <label className="text-xs font-semibold text-slate-400">Birth Year <span className="text-slate-600">(optional)</span></label>
                     <input
                       type="number"
+                      placeholder="e.g. 2007"
                       value={formData.birthYear}
-                      onChange={(e) => setFormData({ ...formData, birthYear: Number(e.target.value) })}
+                      onChange={(e) => setFormData({ ...formData, birthYear: e.target.value })}
                       className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                     />
                   </div>
@@ -968,20 +1075,22 @@ export default function CoachDashboard() {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs font-semibold text-slate-400">Height (inches)</label>
+                    <label className="text-xs font-semibold text-slate-400">Height (inches) <span className="text-slate-600">(optional)</span></label>
                     <input
                       type="number"
+                      placeholder="e.g. 72"
                       value={formData.heightInches}
-                      onChange={(e) => setFormData({ ...formData, heightInches: Number(e.target.value) })}
+                      onChange={(e) => setFormData({ ...formData, heightInches: e.target.value })}
                       className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                     />
                   </div>
                   <div>
-                    <label className="text-xs font-semibold text-slate-400">Weight (lbs)</label>
+                    <label className="text-xs font-semibold text-slate-400">Weight (lbs) <span className="text-slate-600">(optional)</span></label>
                     <input
                       type="number"
+                      placeholder="e.g. 185"
                       value={formData.weightLbs}
-                      onChange={(e) => setFormData({ ...formData, weightLbs: Number(e.target.value) })}
+                      onChange={(e) => setFormData({ ...formData, weightLbs: e.target.value })}
                       className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-red-500"
                     />
                   </div>
@@ -1004,6 +1113,7 @@ export default function CoachDashboard() {
                   </button>
                 </div>
               </form>
+              )}
             </div>
           </div>
         )}

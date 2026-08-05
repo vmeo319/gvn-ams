@@ -1,7 +1,10 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import { LogOut, ArrowLeft } from 'lucide-react'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 
 interface Metric {
@@ -12,9 +15,16 @@ interface Metric {
 }
 
 export default function AthletePage() {
+  const router = useRouter()
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedMetric, setSelectedMetric] = useState<'iso' | 'v0' | 'cmj'>('iso')
+  const [isCoach, setIsCoach] = useState(false)
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    router.push('/')
+  }
 
 
   useEffect(() => {
@@ -32,6 +42,14 @@ export default function AthletePage() {
         if (data) {
           setMetrics(data as Metric[])
         }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single()
+
+        setIsCoach(profile?.role === 'coach' || profile?.role === 'admin')
       }
       setLoading(false)
     }
@@ -49,7 +67,27 @@ export default function AthletePage() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
-      <h1 className="text-3xl font-bold tracking-tight">Athlete Performance Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold tracking-tight">Athlete Performance Dashboard</h1>
+        <div className="flex items-center gap-3">
+          {isCoach && (
+            <Link
+              href="/coach"
+              className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to Coach Dashboard</span>
+            </Link>
+          )}
+          <button
+            onClick={handleSignOut}
+            className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </div>
 
       {/* Summary Metric Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

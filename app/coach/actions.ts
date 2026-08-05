@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
+import { headers } from 'next/headers'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -10,6 +11,20 @@ const supabaseAdmin = createClient(
   supabaseUrl,
   serviceRoleKey || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
+
+async function hasAuthAccount(id: string): Promise<boolean> {
+  const res = await fetch(`${supabaseUrl}/auth/v1/admin/users/${id}`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+  })
+  return res.status === 200
+}
+
+async function getAppOrigin(): Promise<string> {
+  const hdrs = await headers()
+  const host = hdrs.get('host') || 'localhost:3000'
+  const protocol = host.startsWith('localhost') ? 'http' : 'https'
+  return `${protocol}://${host}`
+}
 
 const formatError = (err: any) => {
   if (!err) return 'Unknown error.'
@@ -22,81 +37,158 @@ const formatError = (err: any) => {
   return 'The email/username is likely already taken, or the server blocked the request.'
 }
 
-interface NewAthleteData {
-  email: string
-  password: string
+interface AthleteUpsertData {
   firstName: string
   lastName: string
-  birthYear: number
-  position: string
-  heightInches: number
-  weightLbs: number
-  location?: string
+  email?: string
+  birthYear?: number
+  position?: string
+  heightInches?: number
+  weightLbs?: number
+  locationId?: string
 }
 
-export async function createAthleteAction(data: NewAthleteData) {
+// Adds/edits an athlete by name. Name is the only required field — every other field
+// (email, height/weight, location, position, birth year) is optional and independent:
+// a coach can set any subset of them in one call. If a profile with that name already
+// exists (e.g. an unclaimed roster row), the provided fields update it in place rather
+// than creating a duplicate. If an email is provided and this athlete has no login yet,
+// an invite link is generated (not emailed) for the coach to share directly.
+export async function upsertAthleteAction(data: AthleteUpsertData) {
   try {
-    const cleanEmail = data.email.trim().toLowerCase()
     const cleanFirstName = data.firstName.trim()
     const cleanLastName = data.lastName.trim()
+    if (!cleanFirstName || !cleanLastName) {
+      return { success: false, error: 'First and last name are required.' }
+    }
+    const cleanEmail = data.email?.trim().toLowerCase() || null
 
-    if (!cleanEmail || !data.password) return { success: false, error: 'Email and password are required.' }
-    if (data.password.length < 6) return { success: false, error: 'Password must be at least 6 characters.' }
+    const overrides: Record<string, any> = {}
+    if (data.birthYear !== undefined && data.birthYear !== null) overrides.birth_year = data.birthYear
+    if (data.position) overrides.position = data.position
+    if (data.heightInches !== undefined && data.heightInches !== null) overrides.height_inches = data.heightInches
+    if (data.weightLbs !== undefined && data.weightLbs !== null) overrides.weight_lbs = data.weightLbs
+    if (data.locationId) overrides.location_id = data.locationId
 
-    // 1. Look for the existing athlete profile to PRESERVE DATA
     const { data: existingAthlete } = await supabaseAdmin
       .from('profiles')
-      .select('id')
+      .select('*')
       .ilike('first_name', cleanFirstName)
       .ilike('last_name', cleanLastName)
       .maybeSingle()
 
-    // 2. STANDARD SIGNUP (Completely bypasses the buggy Admin API)
-    const { data: authData, error: authErr } = await supabaseAdmin.auth.signUp({
-      email: cleanEmail,
-      password: data.password,
-      options: {
-        data: {
-          first_name: cleanFirstName,
-          last_name: cleanLastName,
+    // No email: this is a pure profile create/update, no login involved.
+    if (!cleanEmail) {
+      if (existingAthlete) {
+        if (Object.keys(overrides).length > 0) {
+          const { error } = await supabaseAdmin.from('profiles').update(overrides).eq('id', existingAthlete.id)
+          if (error) return { success: false, error: formatError(error) }
         }
+        return { success: true, message: 'Athlete profile updated.' }
       }
-    })
-
-    if (authErr || !authData?.user) {
-      return { success: false, error: `Signup failed: ${formatError(authErr)}` }
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .insert({ first_name: cleanFirstName, last_name: cleanLastName, role: 'athlete', ...overrides })
+      if (error) return { success: false, error: formatError(error) }
+      return { success: true, message: 'New athlete profile created (no login yet — they can claim it from the sign-up page).' }
     }
 
-    const newUserId = authData.user.id
+    // Email provided: this athlete needs (or already has) a login.
+    if (existingAthlete) {
+      const alreadyClaimed = await hasAuthAccount(existingAthlete.id)
+      if (alreadyClaimed) {
+        if (Object.keys(overrides).length > 0) {
+          const { error } = await supabaseAdmin.from('profiles').update(overrides).eq('id', existingAthlete.id)
+          if (error) return { success: false, error: formatError(error) }
+        }
+        return { success: true, message: 'This athlete already has a login — their profile details were updated instead.' }
+      }
 
-    // 3. MIGRATE DATA (If they had an old disconnected profile on the leaderboard)
-    if (existingAthlete && existingAthlete.id !== newUserId) {
-      // Move all performance metrics to the new valid login ID
+      // `profiles` has a unique constraint on (first_name, last_name), and creating a new
+      // auth user auto-creates a profiles row via a DB trigger using that same name — so
+      // the orphaned row has to be renamed out of the way first or the trigger's insert
+      // collides.
+      const holdName = `__claiming_${existingAthlete.id}`
+      await supabaseAdmin
+        .from('profiles')
+        .update({ first_name: holdName, last_name: holdName })
+        .eq('id', existingAthlete.id)
+
+      const origin = await getAppOrigin()
+      const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'invite',
+        email: cleanEmail,
+        options: {
+          data: { first_name: cleanFirstName, last_name: cleanLastName },
+          redirectTo: `${origin}/invite`,
+        },
+      })
+
+      if (inviteErr || !inviteData?.user) {
+        await supabaseAdmin
+          .from('profiles')
+          .update({ first_name: cleanFirstName, last_name: cleanLastName })
+          .eq('id', existingAthlete.id)
+        return { success: false, error: `Invite failed: ${formatError(inviteErr)}` }
+      }
+
+      const newUserId = inviteData.user.id
+
+      const { error: profileErr } = await supabaseAdmin.from('profiles').upsert(
+        {
+          id: newUserId,
+          first_name: cleanFirstName,
+          last_name: cleanLastName,
+          role: 'athlete',
+          birth_year: overrides.birth_year ?? existingAthlete.birth_year,
+          position: overrides.position ?? existingAthlete.position,
+          height_inches: overrides.height_inches ?? existingAthlete.height_inches,
+          weight_lbs: overrides.weight_lbs ?? existingAthlete.weight_lbs,
+          location_id: overrides.location_id ?? existingAthlete.location_id,
+        },
+        { onConflict: 'id' }
+      )
+      if (profileErr) return { success: false, error: formatError(profileErr) }
+
       await supabaseAdmin
         .from('performance_metrics')
         .update({ athlete_id: newUserId })
         .eq('athlete_id', existingAthlete.id)
-      
-      // Delete the old orphaned profile so the leaderboard stays clean
       await supabaseAdmin.from('profiles').delete().eq('id', existingAthlete.id)
+
+      return {
+        success: true,
+        inviteLink: inviteData.properties?.action_link,
+        message: 'Invite link created — share it with the athlete to activate their account.',
+      }
     }
 
-    // 4. CREATE / UPDATE PROFILE with the physical stats
-    const { error: profileError } = await supabaseAdmin.from('profiles').upsert({
-      id: newUserId,
-      first_name: cleanFirstName,
-      last_name: cleanLastName,
-      birth_year: data.birthYear,
-      position: data.position,
-      height_inches: data.heightInches,
-      weight_lbs: data.weightLbs,
-      location: data.location || 'GVN- North Shore',
-      role: 'athlete'
-    }, { onConflict: 'id' })
+    // No existing profile at all: brand new athlete, created straight from an invite.
+    const origin = await getAppOrigin()
+    const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'invite',
+      email: cleanEmail,
+      options: {
+        data: { first_name: cleanFirstName, last_name: cleanLastName },
+        redirectTo: `${origin}/invite`,
+      },
+    })
 
-    if (profileError) return { success: false, error: formatError(profileError) }
+    if (inviteErr || !inviteData?.user) {
+      return { success: false, error: `Invite failed: ${formatError(inviteErr)}` }
+    }
 
-    return { success: true }
+    const newUserId = inviteData.user.id
+    const { error: profileErr } = await supabaseAdmin
+      .from('profiles')
+      .upsert({ id: newUserId, first_name: cleanFirstName, last_name: cleanLastName, role: 'athlete', ...overrides }, { onConflict: 'id' })
+    if (profileErr) return { success: false, error: formatError(profileErr) }
+
+    return {
+      success: true,
+      inviteLink: inviteData.properties?.action_link,
+      message: 'Invite link created — share it with the athlete to activate their account.',
+    }
   } catch (err: any) {
     return { success: false, error: formatError(err) }
   }
