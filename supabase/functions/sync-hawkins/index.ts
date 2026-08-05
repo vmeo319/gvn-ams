@@ -6,6 +6,24 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
+// First-name variants that should be treated as the same person (last name must still
+// match exactly). Hawkins and the roster don't always agree on which form gets used.
+const NICKNAME_GROUPS: string[][] = [
+  ['nate', 'nathan', 'nathen', 'nathaniel'],
+  ['kenneth', 'kenny', 'ken'],
+  ['socrates', 'sam', 'samuel'],
+]
+const nicknameGroupOf = new Map<string, Set<string>>()
+for (const group of NICKNAME_GROUPS) {
+  const set = new Set(group)
+  for (const name of group) nicknameGroupOf.set(name, set)
+}
+function firstNamesMatch(a: string, b: string): boolean {
+  if (a === b) return true
+  const groupA = nicknameGroupOf.get(a)
+  return !!groupA && groupA.has(b)
+}
+
 Deno.serve(async (req) => {
   try {
     if (!HAWKINS_REFRESH_TOKEN) {
@@ -51,10 +69,14 @@ Deno.serve(async (req) => {
       .select('id, first_name, last_name, weight_lbs')
 
     const profileMap = new Map<string, { id: string; weightLbs: number | null }>()
+    const profilesByLastName = new Map<string, { firstName: string; id: string; weightLbs: number | null }[]>()
     allProfiles?.forEach((p) => {
       if (p.first_name && p.last_name) {
-        const key = `${p.first_name.toLowerCase().trim()}_${p.last_name.toLowerCase().trim()}`
-        profileMap.set(key, { id: p.id, weightLbs: p.weight_lbs })
+        const first = p.first_name.toLowerCase().trim()
+        const last = p.last_name.toLowerCase().trim()
+        profileMap.set(`${first}_${last}`, { id: p.id, weightLbs: p.weight_lbs })
+        if (!profilesByLastName.has(last)) profilesByLastName.set(last, [])
+        profilesByLastName.get(last)!.push({ firstName: first, id: p.id, weightLbs: p.weight_lbs })
       }
     })
 
@@ -72,6 +94,11 @@ Deno.serve(async (req) => {
     let matchedTestsCount = 0
 
     for (const test of tests) {
+      // Reps get marked inactive when a coach invalidates a mis-fire or bad attempt in
+      // the Hawkins app — including them pulls in bogus outlier readings (both far too
+      // high and far too low).
+      if (test?.active === false) continue
+
       // 1. Test Type
       let rawTypeName = ''
       if (test.testType && typeof test.testType === 'object' && test.testType.name) {
@@ -84,21 +111,9 @@ Deno.serve(async (req) => {
 
       const tClean = rawTypeName.trim().toLowerCase()
 
-      // Exclude non-target movements
-      if (
-        tClean.includes('arm swing') ||
-        tClean.includes('armswing') ||
-        tClean.includes('training') ||
-        tClean.includes('barefoot') ||
-        tClean.includes('single leg') ||
-        tClean.includes('multi-hop')
-      ) {
-        continue
-      }
-
-      // Exact match only — the loose "includes('countermovement')" fallback this used to
-      // have also matched "Countermovement Jump-training" and "...-SL Land- L/R" variants,
-      // inflating the recorded max height above the athlete's real best.
+      // Exact match only — a loose "includes('countermovement')" fallback used to also
+      // match "Countermovement Jump-training" and "...-SL Land- L/R" variants, inflating
+      // the recorded max height above the athlete's real best.
       const isPureCMJ = tClean === 'countermovement jump'
 
       // Hawkins encodes the test's tag both as a nested testType.tags[].name AND baked into
@@ -126,7 +141,10 @@ Deno.serve(async (req) => {
 
       if (!fullName) continue
 
-      const parts = fullName.toLowerCase().split(/\s+/)
+      // Trim before splitting — Hawkins has duplicate athlete entries with stray
+      // whitespace (e.g. "kenneth Kim "), and splitting an untrimmed string leaves a
+      // trailing empty segment that corrupts the parsed last name.
+      const parts = fullName.trim().toLowerCase().split(/\s+/)
       const firstName = parts[0]
       const lastName = parts.slice(1).join(' ')
 
@@ -136,10 +154,19 @@ Deno.serve(async (req) => {
       let athleteRecord = profileMap.get(nameKey)
 
       if (!athleteRecord) {
-        for (const [key, val] of profileMap.entries()) {
-          if (key.includes(firstName) && key.includes(lastName)) {
-            athleteRecord = val
-            break
+        // Try nickname-equivalent first name against an exact last-name match first —
+        // safer than the old "substring both ways" fallback, which could cross-match
+        // unrelated people whenever one name happened to contain the other.
+        const candidates = profilesByLastName.get(lastName) || []
+        const nicknameHit = candidates.find((c) => firstNamesMatch(c.firstName, firstName))
+        if (nicknameHit) {
+          athleteRecord = { id: nicknameHit.id, weightLbs: nicknameHit.weightLbs }
+        } else {
+          for (const [key, val] of profileMap.entries()) {
+            if (key.includes(firstName) && key.includes(lastName)) {
+              athleteRecord = val
+              break
+            }
           }
         }
       }
@@ -163,11 +190,11 @@ Deno.serve(async (req) => {
         }
       }
 
-      // 4. ISO Belt Squat Force — read the exact canonical field. The old "cast a wide
-      // net" scan picked up whichever "force"/"peak"/"rel" key happened to enumerate
-      // first, which was very often one of the "Relative Force at N ms (BW)(N/kg)"
-      // sub-metrics (e.g. 110-130) instead of the real "Relative Peak Force (BW)(N/kg)"
-      // (e.g. 56.7) — explaining values well above the real ~100 N/kg gym record.
+      // 4. ISO Belt Squat Force — read the exact canonical field. A prior version cast a
+      // wide net across every "force"/"peak"/"rel" key, which very often landed on one of
+      // the "Relative Force at N ms (BW)(N/kg)" sub-metrics (e.g. 110-130) instead of the
+      // real "Relative Peak Force (BW)(N/kg)" (e.g. 56.7) — explaining values well above
+      // the real ~100 N/kg gym record.
       if (isISOBeltSquat45) {
         const rawForce = Number(
           test['Relative Peak Force (BW)(N/kg)'] ??
