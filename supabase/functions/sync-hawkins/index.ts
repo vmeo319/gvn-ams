@@ -96,14 +96,22 @@ Deno.serve(async (req) => {
         continue
       }
 
-      const isPureCMJ =
-        tClean === 'countermovement jump' ||
-        tClean === 'cmj' ||
-        (tClean.includes('countermovement') && !tClean.includes('single'))
+      // Exact match only — the loose "includes('countermovement')" fallback this used to
+      // have also matched "Countermovement Jump-training" and "...-SL Land- L/R" variants,
+      // inflating the recorded max height above the athlete's real best.
+      const isPureCMJ = tClean === 'countermovement jump'
 
-      const isISO = tClean.includes('isometric') || tClean.includes('iso') || tClean.includes('belt')
+      // Hawkins encodes the test's tag both as a nested testType.tags[].name AND baked into
+      // the compound testType.name ("Isometric Test-ISO Belt Squat - 45"). Match on the tag
+      // specifically — untagged "Isometric Test" and other protocols (Mid-Thigh Pull, etc.)
+      // must NOT be included, since they use a different body position and aren't comparable.
+      const isoTags: string[] = Array.isArray(test?.testType?.tags)
+        ? test.testType.tags.map((t: any) => String(t?.name || '').trim().toLowerCase())
+        : []
+      const isISOBeltSquat45 =
+        isoTags.includes('iso belt squat - 45') || tClean === 'isometric test-iso belt squat - 45'
 
-      if (!isPureCMJ && !isISO) continue
+      if (!isPureCMJ && !isISOBeltSquat45) continue
       matchedTestsCount++
 
       // 2. Athlete Name
@@ -141,45 +149,33 @@ Deno.serve(async (req) => {
       let relForceVal: number | null = null
       let cmjHeightVal: number | null = null
 
-      // 3. CMJ Jump Height
+      // 3. CMJ Jump Height — Hawkins reports this in meters as "Jump Height(m)".
       if (isPureCMJ) {
-        const rawJump = Number(
-          test['Jump Height'] ||
-            test['Jump Height(in)'] ||
-            test['Jump Height(m)'] ||
-            test.jump_height ||
-            test.jumpHeight ||
-            (test.metrics && (test.metrics.jump_height || test.metrics.jumpHeight))
-        )
-        if (!isNaN(rawJump) && rawJump > 0) {
-          cmjHeightVal = rawJump < 3.0 ? rawJump * 39.3701 : rawJump
+        const rawJumpMeters = Number(test['Jump Height(m)'])
+        if (!isNaN(rawJumpMeters) && rawJumpMeters > 0) {
+          cmjHeightVal = rawJumpMeters * 39.3701
+        } else {
+          // Fallback for any differently-shaped payload variant.
+          const rawJump = Number(test['Jump Height'] ?? test['Jump Height(in)'] ?? test.jump_height ?? test.jumpHeight)
+          if (!isNaN(rawJump) && rawJump > 0) {
+            cmjHeightVal = rawJump < 3.0 ? rawJump * 39.3701 : rawJump
+          }
         }
       }
 
-      // 4. ISO Belt Squat Force Extraction (Cast a wide net across all keys)
-      if (isISO) {
-        const flattened = { ...test, ...(test.metrics || {}) }
-
-        for (const [k, v] of Object.entries(flattened)) {
-          const kLower = k.toLowerCase()
-          const valNum = Number(v)
-          if (isNaN(valNum) || valNum <= 0) continue
-
-          // Look for any force key
-          if (kLower.includes('force') || kLower.includes('peak') || kLower.includes('rel')) {
-            if (kLower.includes('weight') || kLower.includes('timestamp') || kLower === 'id') continue
-
-            // Normalize value directly to standard N/kg (30 - 100 range)
-            if (valNum >= 15.0 && valNum <= 150.0) {
-              relForceVal = valNum
-            } else if (valNum < 2.0) {
-              relForceVal = valNum * 98.0665
-            } else if (valNum < 15.0) {
-              relForceVal = valNum * 9.80665
-            }
-
-            if (relForceVal !== null) break
-          }
+      // 4. ISO Belt Squat Force — read the exact canonical field. The old "cast a wide
+      // net" scan picked up whichever "force"/"peak"/"rel" key happened to enumerate
+      // first, which was very often one of the "Relative Force at N ms (BW)(N/kg)"
+      // sub-metrics (e.g. 110-130) instead of the real "Relative Peak Force (BW)(N/kg)"
+      // (e.g. 56.7) — explaining values well above the real ~100 N/kg gym record.
+      if (isISOBeltSquat45) {
+        const rawForce = Number(
+          test['Relative Peak Force (BW)(N/kg)'] ??
+            test['Relative Peak Force(BW)(N/kg)'] ??
+            test['Relative Peak Force (BW) (N/kg)']
+        )
+        if (!isNaN(rawForce) && rawForce > 0) {
+          relForceVal = rawForce
         }
       }
 
