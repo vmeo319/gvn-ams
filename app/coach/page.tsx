@@ -149,14 +149,14 @@ interface ImportStatusRow {
   triggered_by: 'auto' | 'manual'
 }
 
-function formatImportStatus(row: ImportStatusRow | undefined): string {
-  if (!row) return 'Never imported'
+function formatOneImportLine(row: ImportStatusRow | undefined, label: string): string {
+  if (!row) return `${label}: never`
   const date = new Date(row.last_imported_at).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   })
-  return `Last: ${date} · ${row.triggered_by === 'auto' ? 'Auto' : 'Manual'}`
+  return `${label}: ${date}`
 }
 
 export default function CoachDashboard() {
@@ -226,7 +226,7 @@ export default function CoachDashboard() {
     const { data, error } = await supabase.from('import_status').select('source, last_imported_at, triggered_by')
     if (!error && data) {
       const map: Record<string, ImportStatusRow> = {}
-      ;(data as ImportStatusRow[]).forEach((row) => { map[row.source] = row })
+      ;(data as ImportStatusRow[]).forEach((row) => { map[`${row.source}_${row.triggered_by}`] = row })
       setImportStatus(map)
     }
   }
@@ -613,7 +613,7 @@ export default function CoachDashboard() {
           })
           await supabase.from('import_status').upsert(
             { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: 'manual', records_count: metricsToInsert.length },
-            { onConflict: 'source' }
+            { onConflict: 'source, triggered_by' }
           )
           fetchLeaderboard()
           fetchImportStatus()
@@ -704,13 +704,15 @@ export default function CoachDashboard() {
     XLSX.writeFile(workbook, 'GVN_Metrics_Upload_Template.xlsx')
   }
 
-  const filteredData = data.filter((a) => {
-    const nameMatch = `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
-    const locationMatch =
-      selectedLocations.length === 0 ||
-      (a.location && selectedLocations.includes(a.location))
-    return nameMatch && locationMatch
-  })
+  const filteredData = data
+    .filter((a) => {
+      const nameMatch = `${a.first_name} ${a.last_name}`.toLowerCase().includes(search.toLowerCase())
+      const locationMatch =
+        selectedLocations.length === 0 ||
+        (a.location && selectedLocations.includes(a.location))
+      return nameMatch && locationMatch
+    })
+    .sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''))
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10">
@@ -750,7 +752,9 @@ export default function CoachDashboard() {
                     <img src="/Hawkins-logo.png" alt="Hawkins" className="w-6 h-6 object-contain" />
                     <div className="flex flex-col">
                       <span>From Hawkins</span>
-                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['hawkins'])}</span>
+                      <span className="text-[10px] font-normal text-slate-500">
+                        {formatOneImportLine(importStatus['hawkins_auto'], 'Auto')} · {formatOneImportLine(importStatus['hawkins_manual'], 'Manual')}
+                      </span>
                     </div>
                   </button>
 
@@ -766,7 +770,9 @@ export default function CoachDashboard() {
                     <img src="/1080-logo.jpg" alt="1080 Motion" className="w-6 h-6 object-contain rounded-sm" />
                     <div className="flex flex-col">
                       <span>From 1080 Motion</span>
-                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['1080'])}</span>
+                      <span className="text-[10px] font-normal text-slate-500">
+                        {formatOneImportLine(importStatus['1080_auto'], 'Auto')} · {formatOneImportLine(importStatus['1080_manual'], 'Manual')}
+                      </span>
                     </div>
                   </button>
 
@@ -783,7 +789,7 @@ export default function CoachDashboard() {
                     <img src="/Excelologo.png" alt="Excel" className="w-6 h-6 object-contain" />
                     <div className="flex flex-col">
                       <span>From Excel Template</span>
-                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['excel'])}</span>
+                      <span className="text-[10px] font-normal text-slate-500">{formatOneImportLine(importStatus['excel_manual'], 'Last')}</span>
                     </div>
                   </button>
                 </div>

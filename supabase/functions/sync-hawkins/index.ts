@@ -93,6 +93,10 @@ Deno.serve(async (req) => {
 
     let matchedTestsCount = 0
 
+    // Newtons -> pounds: N / 9.80665 (m/s^2) * 2.20462 (kg->lb) = N * 0.224809
+    const N_TO_LBS = 0.224809
+    const latestWeightByAthlete = new Map<string, { timestamp: number; weightLbs: number }>()
+
     for (const test of tests) {
       // Reps get marked inactive when a coach invalidates a mis-fire or bad attempt in
       // the Hawkins app — including them pulls in bogus outlier readings (both far too
@@ -126,8 +130,13 @@ Deno.serve(async (req) => {
       const isISOBeltSquat45 =
         isoTags.includes('iso belt squat - 45') || tClean === 'isometric test-iso belt squat - 45'
 
-      if (!isPureCMJ && !isISOBeltSquat45) continue
-      matchedTestsCount++
+      // Any isometric test (not just the belt-squat-45 protocol) reports the athlete's
+      // bodyweight via the force plate at test time — used below to keep profiles.weight_lbs
+      // current, independent of which specific isometric protocol was run.
+      const isAnyIsometric = tClean.startsWith('isometric')
+
+      if (!isPureCMJ && !isAnyIsometric) continue
+      if (isPureCMJ || isISOBeltSquat45) matchedTestsCount++
 
       // 2. Athlete Name
       let fullName = ''
@@ -172,6 +181,25 @@ Deno.serve(async (req) => {
       }
 
       if (!athleteRecord) continue
+
+      // Any isometric test reports the athlete's bodyweight via "System Weight(N)" —
+      // keep only the most recent one per athlete across this sync's fetch window.
+      if (isAnyIsometric && typeof test.timestamp === 'number') {
+        const rawSystemWeightN = Number(test['System Weight(N)'])
+        // Floor at ~50lbs (222N) — a mis-fired rep where the athlete wasn't fully
+        // settled on the plate yet reports a near-zero system weight (seen as low as 8lbs).
+        if (!isNaN(rawSystemWeightN) && rawSystemWeightN > 222) {
+          const existingWeight = latestWeightByAthlete.get(athleteRecord.id)
+          if (!existingWeight || test.timestamp > existingWeight.timestamp) {
+            latestWeightByAthlete.set(athleteRecord.id, {
+              timestamp: test.timestamp,
+              weightLbs: Number((rawSystemWeightN * N_TO_LBS).toFixed(1)),
+            })
+          }
+        }
+      }
+
+      if (!isPureCMJ && !isISOBeltSquat45) continue
 
       let relForceVal: number | null = null
       let cmjHeightVal: number | null = null
@@ -261,9 +289,20 @@ Deno.serve(async (req) => {
       insertedCount = metricsToInsert.length
     }
 
+    // Autofill profiles.weight_lbs from each athlete's most recent isometric test's
+    // measured System Weight(N), converted to pounds.
+    let weightsUpdated = 0
+    for (const [athleteId, w] of latestWeightByAthlete.entries()) {
+      const { error: weightErr } = await supabase
+        .from('profiles')
+        .update({ weight_lbs: Math.round(w.weightLbs) })
+        .eq('id', athleteId)
+      if (!weightErr) weightsUpdated++
+    }
+
     await supabase.from('import_status').upsert(
       { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: insertedCount },
-      { onConflict: 'source' }
+      { onConflict: 'source, triggered_by' }
     )
 
     return new Response(
@@ -272,6 +311,7 @@ Deno.serve(async (req) => {
         fetchedHawkinsTests: tests.length,
         matchedTestsCount,
         upsertedMetrics: insertedCount,
+        weightsUpdated,
       }),
       { headers: { 'Content-Type': 'application/json' } }
     )

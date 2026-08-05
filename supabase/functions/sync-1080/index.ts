@@ -326,7 +326,7 @@ Deno.serve(async (req) => {
       if (metricsWrittenCount > 0) {
         await supabase.from('import_status').upsert(
           { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: metricsWrittenCount },
-          { onConflict: 'source' }
+          { onConflict: 'source, triggered_by' }
         )
       }
 
