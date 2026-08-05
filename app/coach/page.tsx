@@ -143,6 +143,22 @@ interface LocationRow {
   name: string
 }
 
+interface ImportStatusRow {
+  source: string
+  last_imported_at: string
+  triggered_by: 'auto' | 'manual'
+}
+
+function formatImportStatus(row: ImportStatusRow | undefined): string {
+  if (!row) return 'Never imported'
+  const date = new Date(row.last_imported_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+  return `Last: ${date} · ${row.triggered_by === 'auto' ? 'Auto' : 'Manual'}`
+}
+
 export default function CoachDashboard() {
   const router = useRouter()
   const [data, setData] = useState<LeaderboardRecord[]>([])
@@ -152,6 +168,7 @@ export default function CoachDashboard() {
   const [locationDropdownOpen, setLocationDropdownOpen] = useState(false)
   const [importDropdownOpen, setImportDropdownOpen] = useState(false)
   const [locationOptions, setLocationOptions] = useState<LocationRow[]>([])
+  const [importStatus, setImportStatus] = useState<Record<string, ImportStatusRow>>({})
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -197,11 +214,21 @@ export default function CoachDashboard() {
   useEffect(() => {
     fetchLeaderboard()
     fetchLocations()
+    fetchImportStatus()
   }, [])
 
   const fetchLocations = async () => {
     const { data: locs, error } = await supabase.from('locations').select('id, name').order('name')
     if (!error && locs) setLocationOptions(locs as LocationRow[])
+  }
+
+  const fetchImportStatus = async () => {
+    const { data, error } = await supabase.from('import_status').select('source, last_imported_at, triggered_by')
+    if (!error && data) {
+      const map: Record<string, ImportStatusRow> = {}
+      ;(data as ImportStatusRow[]).forEach((row) => { map[row.source] = row })
+      setImportStatus(map)
+    }
   }
 
   const fetchLeaderboard = async () => {
@@ -323,6 +350,7 @@ export default function CoachDashboard() {
             msg: `Import Successful! Uploaded ${totalInserted} session record(s) across all athletes.`,
           })
           fetchLeaderboard()
+          fetchImportStatus()
         } catch (err: any) {
           setHawkinsStatus({ success: false, msg: `Upload failed: ${err.message}` })
         } finally {
@@ -583,7 +611,12 @@ export default function CoachDashboard() {
             success: true,
             msg: `Successfully imported ${metricsToInsert.length} sprint session record(s) into database!`,
           })
+          await supabase.from('import_status').upsert(
+            { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: 'manual', records_count: metricsToInsert.length },
+            { onConflict: 'source' }
+          )
           fetchLeaderboard()
+          fetchImportStatus()
         } else {
           setTen80Status({
             success: false,
@@ -637,6 +670,7 @@ export default function CoachDashboard() {
             errors: res.errors,
           })
           fetchLeaderboard()
+          fetchImportStatus()
         }
       } catch (err: unknown) {
         const errorMsg = err instanceof Error ? err.message : String(err)
@@ -714,9 +748,12 @@ export default function CoachDashboard() {
                     className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
                   >
                     <img src="/Hawkins-logo.png" alt="Hawkins" className="w-6 h-6 object-contain" />
-                    <span>From Hawkins</span>
+                    <div className="flex flex-col">
+                      <span>From Hawkins</span>
+                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['hawkins'])}</span>
+                    </div>
                   </button>
-                  
+
                   <button
                     onClick={() => {
                       setImportDropdownOpen(false)
@@ -727,7 +764,10 @@ export default function CoachDashboard() {
                     className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
                   >
                     <img src="/1080-logo.jpg" alt="1080 Motion" className="w-6 h-6 object-contain rounded-sm" />
-                    <span>From 1080 Motion</span>
+                    <div className="flex flex-col">
+                      <span>From 1080 Motion</span>
+                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['1080'])}</span>
+                    </div>
                   </button>
 
                   <div className="h-px w-full bg-slate-800/60 my-1"></div>
@@ -741,7 +781,10 @@ export default function CoachDashboard() {
                     className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
                   >
                     <img src="/Excelologo.png" alt="Excel" className="w-6 h-6 object-contain" />
-                    <span>From Excel Template</span>
+                    <div className="flex flex-col">
+                      <span>From Excel Template</span>
+                      <span className="text-[10px] font-normal text-slate-500">{formatImportStatus(importStatus['excel'])}</span>
+                    </div>
                   </button>
                 </div>
               )}

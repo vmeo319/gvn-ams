@@ -323,6 +323,13 @@ Deno.serve(async (req) => {
         .select('*', { count: 'exact', head: true })
         .eq('status', 'pending')
 
+      if (metricsWrittenCount > 0) {
+        await supabase.from('import_status').upsert(
+          { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: metricsWrittenCount },
+          { onConflict: 'source' }
+        )
+      }
+
       return new Response(
         JSON.stringify({
           success: true,

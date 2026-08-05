@@ -261,6 +261,11 @@ Deno.serve(async (req) => {
       insertedCount = metricsToInsert.length
     }
 
+    await supabase.from('import_status').upsert(
+      { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: insertedCount },
+      { onConflict: 'source' }
+    )
+
     return new Response(
       JSON.stringify({
         success: true,

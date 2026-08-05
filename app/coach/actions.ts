@@ -273,6 +273,13 @@ export async function uploadMetricRows(rows: any[]) {
     if (!error) insertedCount++
   }
 
+  if (insertedCount > 0) {
+    await supabaseAdmin.from('import_status').upsert(
+      { source: 'excel', last_imported_at: new Date().toISOString(), triggered_by: 'manual', records_count: insertedCount },
+      { onConflict: 'source' }
+    )
+  }
+
   return { success: true, insertedCount, errors }
 }
 
@@ -355,6 +362,13 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
     const { error } = await supabaseAdmin.from('performance_metrics').upsert(payload, { onConflict: 'athlete_id, test_date' })
     if (!error) insertedCount++
+  }
+
+  if (insertedCount > 0) {
+    await supabaseAdmin.from('import_status').upsert(
+      { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: 'manual', records_count: insertedCount },
+      { onConflict: 'source' }
+    )
   }
 
   return { success: true, insertedCount, errors }
