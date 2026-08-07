@@ -38,6 +38,8 @@ export default function Login() {
 
       if (profile?.role === 'coach' || profile?.role === 'admin') {
         router.push('/coach')
+      } else if (profile?.role === 'parent') {
+        router.push('/parent')
       } else {
         router.push('/athlete')
       }

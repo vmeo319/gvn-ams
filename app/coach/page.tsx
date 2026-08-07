@@ -550,7 +550,7 @@ export default function CoachDashboard() {
           `Matched ${totalMatchedReps} reps across ${Object.keys(athleteSessions).length} unique sprint sessions.`,
         ])
 
-        const metricsToInsert: { athlete_id: string; test_date: string; v0_speed: number | null; top_speed: number | null }[] = []
+        const metricsToInsert: Record<string, any>[] = []
 
         Object.values(athleteSessions).forEach((session) => {
           let maxSpeedMps = Math.max(...session.reps.map((r) => r.speed))
@@ -578,12 +578,14 @@ export default function CoachDashboard() {
           const maxSpeedMph = Number((maxSpeedMps * MPS_TO_MPH).toFixed(2))
           const calculatedV0Mph = Number((calculatedV0Mps * MPS_TO_MPH).toFixed(2))
 
-          metricsToInsert.push({
+          const payload: Record<string, any> = {
             athlete_id: session.athleteId,
             test_date: session.date,
-            v0_speed: session.isV0 ? calculatedV0Mph : null,
-            top_speed: session.is10Yd ? maxSpeedMph : null,
-          })
+          }
+          if (session.isV0) payload.v0_speed = calculatedV0Mph
+          if (session.is10Yd) payload.top_speed = maxSpeedMph
+
+          metricsToInsert.push(payload)
         })
 
         if (metricsToInsert.length > 0) {
@@ -926,7 +928,11 @@ export default function CoachDashboard() {
                     const sprintLevelLabel = isSprintLevel2 ? 'Level 2' : 'Level 1'
 
                     return (
-                      <tr key={a.athlete_id} className="hover:bg-slate-800/40 transition">
+                      <tr
+                        key={a.athlete_id}
+                        onClick={() => router.push(`/coach/athlete/${a.athlete_id}`)}
+                        className="hover:bg-slate-800/40 transition cursor-pointer"
+                      >
                         <td className="py-4 px-6 font-semibold text-white">
                           <div className="flex items-center space-x-2">
                             <span>{a.first_name} {a.last_name}</span>

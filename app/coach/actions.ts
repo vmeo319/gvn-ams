@@ -283,6 +283,49 @@ export async function uploadMetricRows(rows: any[]) {
   return { success: true, insertedCount, errors }
 }
 
+export async function addAthleteNoteAction(data: {
+  athleteId: string
+  authorId: string
+  entryType: 'note' | 'injury' | 'goal'
+  body: string
+}) {
+  const { error } = await supabaseAdmin.from('athlete_notes').insert({
+    athlete_id: data.athleteId,
+    author_id: data.authorId,
+    entry_type: data.entryType,
+    body: data.body,
+  })
+  if (error) return { success: false, error: formatError(error) }
+  return { success: true }
+}
+
+// Creates a coach-issued invite link tied to one athlete. Unlike the athlete-invite flow
+// above, this doesn't call auth.admin.generateLink — that provisions a brand-new auth user
+// at generation time and only supports a single one-time claim, which breaks the moment a
+// parent with an existing account needs to link a second child. Instead this issues a
+// lightweight token that the claim page (app/parent-invite/actions.ts) resolves against
+// whatever session (new or existing) the parent has when they open the link.
+export async function createParentInviteAction(data: { athleteId: string; coachId: string; email?: string }) {
+  try {
+    const { data: invite, error } = await supabaseAdmin
+      .from('parent_invites')
+      .insert({
+        athlete_id: data.athleteId,
+        created_by: data.coachId,
+        email: data.email?.trim().toLowerCase() || null,
+      })
+      .select('token')
+      .single()
+
+    if (error) return { success: false, error: formatError(error) }
+
+    const origin = await getAppOrigin()
+    return { success: true, inviteLink: `${origin}/parent-invite/${invite.token}` }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}
+
 export async function uploadHawkinsScoreboardCSV(rows: any[]) {
   let insertedCount = 0
   let errors: string[] = []
