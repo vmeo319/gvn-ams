@@ -984,9 +984,13 @@ export default function CoachDashboard() {
                         className="hover:bg-slate-800/40 transition cursor-pointer"
                       >
                         <td className="py-4 px-6 font-semibold text-white">
-                          <div className="flex items-center space-x-2">
+                          <Link
+                            href={`/coach/athlete/${a.athlete_id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center space-x-2 hover:underline"
+                          >
                             <span>{a.first_name} {a.last_name}</span>
-                          </div>
+                          </Link>
                           {a.location && (
                             <span className="inline-block mt-1 px-2 py-0.5 bg-slate-800 text-slate-400 border border-slate-700/60 rounded-md text-[10px] font-medium">
                               {a.location}

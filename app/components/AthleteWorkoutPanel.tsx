@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
-import { searchActiveWorkouts, assignWorkoutToAthlete } from '@/app/coach/workouts/actions'
+import { searchActiveWorkouts, assignWorkoutToAthlete, clearWorkoutAssignment } from '@/app/coach/workouts/actions'
 
 interface CurrentWorkout {
   workout_id: string
@@ -87,6 +87,14 @@ export default function AthleteWorkoutPanel({ athleteId, coachId }: { athleteId:
     await loadAll()
   }
 
+  async function handleClear() {
+    if (!confirm('Remove this athlete\'s current workout? This deletes their in-progress week count for it (any earlier completed workouts stay in their history).')) return
+    setAssigning(true)
+    await clearWorkoutAssignment({ athleteId })
+    setAssigning(false)
+    await loadAll()
+  }
+
   const color = current ? getWorkoutStatusColor(current.weeks_completed || 0) : null
   const style = color ? WORKOUT_STATUS_STYLES[color] : null
 
@@ -108,6 +116,16 @@ export default function AthleteWorkoutPanel({ athleteId, coachId }: { athleteId:
             <span className="text-sm text-slate-500">No workout assigned.</span>
           )}
 
+          <div className="flex items-center gap-2">
+          {current && (
+            <button
+              onClick={handleClear}
+              disabled={assigning}
+              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-red-950/60 text-slate-400 hover:text-red-400 text-sm font-semibold transition disabled:opacity-50"
+            >
+              Remove
+            </button>
+          )}
           <div ref={boxRef} className="relative">
             <button
               onClick={() => setAssignOpen((v) => !v)}
@@ -139,6 +157,7 @@ export default function AthleteWorkoutPanel({ athleteId, coachId }: { athleteId:
                 </div>
               </div>
             )}
+          </div>
           </div>
         </div>
       )}

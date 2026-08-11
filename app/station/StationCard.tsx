@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { X } from 'lucide-react'
+import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
 
 interface Week {
   id: string
@@ -30,6 +31,7 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
   const [athleteName, setAthleteName] = useState('')
   const [workoutId, setWorkoutId] = useState<string | null>(null)
   const [workoutName, setWorkoutName] = useState('')
+  const [weeksCompleted, setWeeksCompleted] = useState(0)
   const [weeks, setWeeks] = useState<Week[]>([])
   const [days, setDays] = useState<Day[]>([])
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null)
@@ -59,6 +61,7 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
       }
       setWorkoutId(current.workout_id)
       setWorkoutName(current.workout_name)
+      setWeeksCompleted(current.weeks_completed || 0)
 
       const { data: weekRows } = await supabase
         .from('workout_weeks')
@@ -137,9 +140,19 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
 
   return (
     <div className="w-80 shrink-0 rounded-xl border border-slate-800 bg-slate-900 flex flex-col max-h-[85vh]">
-      <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-        <span className="font-bold text-white truncate">{athleteName || '...'}</span>
-        <button onClick={onRemove} className="text-slate-600 hover:text-red-400">
+      <div className="p-3 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-bold text-white truncate">{athleteName || '...'}</span>
+          {!loading && workoutId && (
+            <span
+              title={`Week ${weeksCompleted + 1}`}
+              className={`shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center text-white ${WORKOUT_STATUS_STYLES[getWorkoutStatusColor(weeksCompleted)].dot}`}
+            >
+              {weeksCompleted + 1}
+            </span>
+          )}
+        </div>
+        <button onClick={onRemove} className="text-slate-600 hover:text-red-400 shrink-0">
           <X className="w-4 h-4" />
         </button>
       </div>

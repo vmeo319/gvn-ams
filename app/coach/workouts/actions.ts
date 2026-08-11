@@ -354,3 +354,28 @@ export async function assignWorkoutToAthlete(data: { athleteId: string; workoutI
     return { success: false, error: formatError(err) }
   }
 }
+
+// Fully unassigns an athlete's workout — removes the current assignment and deletes the
+// currently-open history row entirely (not just closes it), since this is meant for
+// correcting a mistake, not recording that the athlete legitimately finished a stint.
+// Any earlier, already-closed history rows are left alone.
+export async function clearWorkoutAssignment(data: { athleteId: string }) {
+  try {
+    const { error: assignErr } = await supabaseAdmin
+      .from('athlete_workout_assignments')
+      .delete()
+      .eq('athlete_id', data.athleteId)
+    if (assignErr) return { success: false, error: formatError(assignErr) }
+
+    const { error: historyErr } = await supabaseAdmin
+      .from('athlete_workout_history')
+      .delete()
+      .eq('athlete_id', data.athleteId)
+      .is('ended_on', null)
+    if (historyErr) return { success: false, error: formatError(historyErr) }
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}
