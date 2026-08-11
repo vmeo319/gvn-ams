@@ -40,6 +40,8 @@ export default function Login() {
         router.push('/coach')
       } else if (profile?.role === 'parent') {
         router.push('/parent')
+      } else if (profile?.role === 'ipad') {
+        router.push('/station')
       } else {
         router.push('/athlete')
       }
