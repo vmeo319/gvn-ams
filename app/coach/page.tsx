@@ -8,6 +8,12 @@ import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCirc
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
+import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
+
+// These 3 coaches only work out of North Shore day-to-day, so default the dashboard's
+// location filter (and the levels columns, which North Shore actually uses) to that —
+// still just a starting default, changeable via the existing filter UI.
+const DEFAULT_NORTH_SHORE_EMAILS = ['ryanlajeuness@gmail.com', 'j.frey@gvn.com', 'vmeo319@gmail.com']
 
 interface LeaderboardRecord {
   athlete_id: string
@@ -169,6 +175,8 @@ export default function CoachDashboard() {
   const [importDropdownOpen, setImportDropdownOpen] = useState(false)
   const [locationOptions, setLocationOptions] = useState<LocationRow[]>([])
   const [importStatus, setImportStatus] = useState<Record<string, ImportStatusRow>>({})
+  const [workoutByAthlete, setWorkoutByAthlete] = useState<Map<string, { name: string; weeksCompleted: number }>>(new Map())
+  const [showLevels, setShowLevels] = useState(false)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -215,7 +223,26 @@ export default function CoachDashboard() {
     fetchLeaderboard()
     fetchLocations()
     fetchImportStatus()
+    fetchWorkouts()
+
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user?.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase())) {
+        setSelectedLocations(['GVN- North Shore'])
+        setShowLevels(true)
+      }
+    })
   }, [])
+
+  const fetchWorkouts = async () => {
+    const { data: rows, error } = await supabase
+      .from('athlete_current_workout')
+      .select('athlete_id, workout_name, weeks_completed')
+    if (!error && rows) {
+      const map = new Map<string, { name: string; weeksCompleted: number }>()
+      rows.forEach((r: any) => map.set(r.athlete_id, { name: r.workout_name, weeksCompleted: r.weeks_completed || 0 }))
+      setWorkoutByAthlete(map)
+    }
+  }
 
   const fetchLocations = async () => {
     const { data: locs, error } = await supabase.from('locations').select('id, name').order('name')
@@ -818,6 +845,14 @@ export default function CoachDashboard() {
             </Link>
 
             <Link
+              href="/coach/workouts"
+              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <Zap className="w-4 h-4 text-red-400" />
+              <span>Workouts</span>
+            </Link>
+
+            <Link
               href="/athlete"
               className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
             >
@@ -890,6 +925,17 @@ export default function CoachDashboard() {
               </div>
             )}
           </div>
+
+          <button
+            onClick={() => setShowLevels((v) => !v)}
+            className={`flex items-center space-x-2 rounded-lg px-4 py-2 text-sm font-medium border transition ${
+              showLevels
+                ? 'bg-red-950/20 border-red-500 text-white'
+                : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+            }`}
+          >
+            <span>Levels</span>
+          </button>
         </div>
 
         {/* Leaderboard Table */}
@@ -899,26 +945,27 @@ export default function CoachDashboard() {
               <thead>
                 <tr className="bg-slate-950/60 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
                   <th className="py-4 px-6">Athlete</th>
+                  <th className="py-4 px-4">Current Workout</th>
                   <th className="py-4 px-4">Pos</th>
                   <th className="py-4 px-4">Ht / Wt</th>
                   <th className="py-4 px-4">ISO Peak Force</th>
                   <th className="py-4 px-4">V0 Speed</th>
                   <th className="py-4 px-4 text-cyan-400">10yd Top Speed</th>
                   <th className="py-4 px-4">Max Jump</th>
-                  <th className="py-4 px-4 text-center">Workout Level</th>
-                  <th className="py-4 px-4 text-center">Sprint Level</th>
+                  {showLevels && <th className="py-4 px-4 text-center">Workout Level</th>}
+                  {showLevels && <th className="py-4 px-4 text-center">Sprint Level</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-sm">
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
+                    <td colSpan={showLevels ? 10 : 8} className="py-12 text-center text-slate-500">
                       Loading GVN performance records...
                     </td>
                   </tr>
                 ) : filteredData.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
+                    <td colSpan={showLevels ? 10 : 8} className="py-12 text-center text-slate-500">
                       No matching athletes found.
                     </td>
                   </tr>
@@ -926,6 +973,9 @@ export default function CoachDashboard() {
                   filteredData.map((a) => {
                     const isSprintLevel2 = a.v0_speed !== null && a.v0_speed >= 17.50
                     const sprintLevelLabel = isSprintLevel2 ? 'Level 2' : 'Level 1'
+                    const currentWorkout = workoutByAthlete.get(a.athlete_id)
+                    const workoutColor = currentWorkout ? getWorkoutStatusColor(currentWorkout.weeksCompleted) : null
+                    const workoutStyle = workoutColor ? WORKOUT_STATUS_STYLES[workoutColor] : null
 
                     return (
                       <tr
@@ -941,6 +991,16 @@ export default function CoachDashboard() {
                             <span className="inline-block mt-1 px-2 py-0.5 bg-slate-800 text-slate-400 border border-slate-700/60 rounded-md text-[10px] font-medium">
                               {a.location}
                             </span>
+                          )}
+                        </td>
+                        <td className="py-4 px-4">
+                          {currentWorkout ? (
+                            <div className="flex items-center gap-2">
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${workoutStyle!.dot}`} />
+                              <span className="text-slate-300 text-xs">{currentWorkout.name}</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-600 text-xs">-</span>
                           )}
                         </td>
                         <td className="py-4 px-4 text-slate-400">{a.position}</td>
@@ -959,28 +1019,32 @@ export default function CoachDashboard() {
                         <td className="py-4 px-4 font-medium text-slate-200">
                           {a.max_jump ? `${a.max_jump}"` : '-'}
                         </td>
-                        <td className="py-4 px-4 text-center">
-                          <span
-                            className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                              a.workout_level === 'Level 3'
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                            }`}
-                          >
-                            {a.workout_level}
-                          </span>
-                        </td>
-                        <td className="py-4 px-4 text-center">
-                          <span
-                            className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
-                              isSprintLevel2
-                                ? 'bg-red-500/10 text-red-400 border border-red-500/20'
-                                : 'bg-slate-800/80 text-slate-400 border border-slate-700/60'
-                            }`}
-                          >
-                            {sprintLevelLabel}
-                          </span>
-                        </td>
+                        {showLevels && (
+                          <td className="py-4 px-4 text-center">
+                            <span
+                              className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                                a.workout_level === 'Level 3'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              }`}
+                            >
+                              {a.workout_level}
+                            </span>
+                          </td>
+                        )}
+                        {showLevels && (
+                          <td className="py-4 px-4 text-center">
+                            <span
+                              className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold ${
+                                isSprintLevel2
+                                  ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                  : 'bg-slate-800/80 text-slate-400 border border-slate-700/60'
+                              }`}
+                            >
+                              {sprintLevelLabel}
+                            </span>
+                          </td>
+                        )}
                       </tr>
                     )
                   })

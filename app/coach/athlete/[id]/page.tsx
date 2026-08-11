@@ -8,6 +8,7 @@ import { ArrowLeft, Copy, UserPlus } from 'lucide-react'
 import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
 import TrendBadge from '@/app/components/TrendBadge'
 import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
+import AthleteWorkoutPanel from '@/app/components/AthleteWorkoutPanel'
 import { createParentInviteAction } from '@/app/coach/actions'
 
 export default function CoachAthleteDetailPage() {
@@ -163,6 +164,8 @@ export default function CoachAthleteDetailPage() {
       </div>
 
       <MetricsDashboard metrics={metrics} loading={loading} />
+
+      <AthleteWorkoutPanel athleteId={athleteId} coachId={coachId!} />
 
       <AthleteNotesPanel athleteId={athleteId} authorId={coachId!} />
     </div>
