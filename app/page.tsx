@@ -13,6 +13,12 @@ export default function Login() {
   const [errorMsg, setErrorMsg] = useState('')
   const router = useRouter()
 
+  const [forgotOpen, setForgotOpen] = useState(false)
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotSending, setForgotSending] = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
+  const [forgotError, setForgotError] = useState('')
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
@@ -42,16 +48,33 @@ export default function Login() {
         router.push('/parent')
       } else if (profile?.role === 'ipad') {
         router.push('/station')
+      } else if (profile?.role === 'pending') {
+        router.push('/pending')
       } else {
         router.push('/athlete')
       }
     }
   }
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setForgotError('')
+    setForgotSending(true)
+    const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    })
+    setForgotSending(false)
+    if (error) {
+      setForgotError(error.message)
+      return
+    }
+    setForgotSent(true)
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6">
       <div className="max-w-md w-full bg-slate-900 border border-red-900/30 rounded-3xl p-8 shadow-2xl shadow-red-950/40 space-y-6">
-        
+
         {/* GVN Branding Header */}
         <div className="flex flex-col items-center text-center space-y-3">
           <div className="relative w-24 h-24 mb-1">
@@ -63,7 +86,7 @@ export default function Login() {
               priority
             />
           </div>
-          
+
           <div className="relative w-48 h-10">
             <Image
               src="/gvn-logo-letters.png"
@@ -79,52 +102,116 @@ export default function Login() {
           </p>
         </div>
 
-        {errorMsg && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-3 rounded-xl text-center font-medium">
-            {errorMsg}
-          </div>
+        {!forgotOpen && (
+          <>
+            {errorMsg && (
+              <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-3 rounded-xl text-center font-medium">
+                {errorMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="athlete@gmail.com"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Password</label>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-900/30 text-sm mt-2 disabled:opacity-50 uppercase tracking-wider"
+              >
+                {loading ? 'Signing In...' : 'Sign In'}
+              </button>
+            </form>
+
+            <div className="flex items-center justify-between">
+              <Link
+                href="/signup"
+                className="text-xs text-slate-400 hover:text-white transition"
+              >
+                First time logging in? Set up your account
+              </Link>
+              <button
+                onClick={() => {
+                  setForgotOpen(true)
+                  setForgotEmail(email)
+                  setForgotSent(false)
+                  setForgotError('')
+                }}
+                className="text-xs text-slate-400 hover:text-white transition"
+              >
+                Forgot password?
+              </button>
+            </div>
+          </>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="athlete@gmail.com"
-              className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
-            />
+        {forgotOpen && (
+          <div className="space-y-4">
+            {forgotSent ? (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm p-4 rounded-xl text-center">
+                Check your email for a link to reset your password.
+              </div>
+            ) : (
+              <>
+                <p className="text-slate-400 text-xs text-center leading-relaxed">
+                  Enter your email and we'll send you a link to reset your password.
+                </p>
+                {forgotError && (
+                  <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-xs p-3 rounded-xl text-center font-medium">
+                    {forgotError}
+                  </div>
+                )}
+                <form onSubmit={handleForgotPassword} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Email</label>
+                    <input
+                      type="email"
+                      required
+                      value={forgotEmail}
+                      onChange={(e) => setForgotEmail(e.target.value)}
+                      placeholder="athlete@gmail.com"
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={forgotSending}
+                    className="w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-900/30 text-sm disabled:opacity-50 uppercase tracking-wider"
+                  >
+                    {forgotSending ? 'Sending...' : 'Send Reset Link'}
+                  </button>
+                </form>
+              </>
+            )}
+            <button
+              onClick={() => setForgotOpen(false)}
+              className="block w-full text-center text-xs text-slate-400 hover:text-white transition"
+            >
+              Back to sign in
+            </button>
           </div>
-
-          <div>
-            <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="w-full bg-slate-950 border border-slate-800 focus:border-red-600 rounded-xl px-4 py-3 text-sm text-white focus:outline-none transition"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-red-700 to-red-600 hover:from-red-600 hover:to-red-500 text-white font-extrabold py-3.5 rounded-xl transition shadow-lg shadow-red-900/30 text-sm mt-2 disabled:opacity-50 uppercase tracking-wider"
-          >
-            {loading ? 'Signing In...' : 'Sign In'}
-          </button>
-        </form>
-
-        <Link
-          href="/signup"
-          className="block text-center text-xs text-slate-400 hover:text-white transition"
-        >
-          First time logging in? Set up your account
-        </Link>
+        )}
       </div>
     </main>
   )

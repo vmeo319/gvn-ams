@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2 } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
@@ -177,6 +177,7 @@ export default function CoachDashboard() {
   const [importStatus, setImportStatus] = useState<Record<string, ImportStatusRow>>({})
   const [workoutByAthlete, setWorkoutByAthlete] = useState<Map<string, { name: string; weeksCompleted: number }>>(new Map())
   const [showLevels, setShowLevels] = useState(false)
+  const [pendingRequestCount, setPendingRequestCount] = useState(0)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -224,6 +225,7 @@ export default function CoachDashboard() {
     fetchLocations()
     fetchImportStatus()
     fetchWorkouts()
+    fetchPendingRequestCount()
 
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user?.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase())) {
@@ -242,6 +244,11 @@ export default function CoachDashboard() {
       rows.forEach((r: any) => map.set(r.athlete_id, { name: r.workout_name, weeksCompleted: r.weeks_completed || 0 }))
       setWorkoutByAthlete(map)
     }
+  }
+
+  const fetchPendingRequestCount = async () => {
+    const { count } = await supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('role', 'pending')
+    setPendingRequestCount(count || 0)
   }
 
   const fetchLocations = async () => {
@@ -850,6 +857,19 @@ export default function CoachDashboard() {
             >
               <Zap className="w-4 h-4 text-red-400" />
               <span>Workouts</span>
+            </Link>
+
+            <Link
+              href="/coach/signup-requests"
+              className="relative flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <UserPlus className="w-4 h-4 text-emerald-400" />
+              <span>Requests</span>
+              {pendingRequestCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">
+                  {pendingRequestCount}
+                </span>
+              )}
             </Link>
 
             <Link
