@@ -9,6 +9,9 @@ import { ArrowLeft, Printer } from 'lucide-react'
 import MetricChartPanel from '@/app/components/MetricChartPanel'
 import { Metric, MetricKey, METRIC_INFO } from '@/app/components/metricInfo'
 
+const ALL_METRIC_KEYS = Object.keys(METRIC_INFO) as MetricKey[]
+const CHARTS_PER_PAGE = 4
+
 export default function AthleteReportCardPage() {
   const router = useRouter()
   const params = useParams<{ id: string }>()
@@ -19,6 +22,11 @@ export default function AthleteReportCardPage() {
   const [location, setLocation] = useState('')
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
+  const [selectedMetrics, setSelectedMetrics] = useState<MetricKey[]>(ALL_METRIC_KEYS)
+
+  function toggleMetric(key: MetricKey) {
+    setSelectedMetrics((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+  }
 
   useEffect(() => {
     async function load() {
@@ -66,6 +74,13 @@ export default function AthleteReportCardPage() {
 
   const generatedDate = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
 
+  // Chunked into pages of 4 so a 5th (or 6th...) selected metric spills onto its own page,
+  // each page repeating the branded header/athlete name, matching a real multi-page report.
+  const pages: MetricKey[][] = []
+  for (let i = 0; i < selectedMetrics.length; i += CHARTS_PER_PAGE) {
+    pages.push(selectedMetrics.slice(i, i + CHARTS_PER_PAGE))
+  }
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6 print:p-0 print:max-w-none">
       <style>{`
@@ -91,39 +106,75 @@ export default function AthleteReportCardPage() {
         </button>
       </div>
 
-      <div className="p-8 print:p-0 rounded-2xl print:rounded-none border print:border-0 border-red-900/30 bg-slate-900 print:bg-white space-y-8">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 print:border-slate-300 pb-6">
-          <div className="flex items-center gap-4">
-            <div className="relative w-16 h-16 shrink-0">
-              <Image src="/gvn-logo-wolf.png" alt="GVN Wolf Logo" fill className="object-contain" />
-            </div>
-            <div className="relative w-40 h-8">
-              <Image src="/gvn-logo-letters.png" alt="GVN Performance" fill className="object-contain" />
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-xs text-slate-500 print:text-slate-600 uppercase tracking-wider">Athlete Report Card</div>
-            <div className="text-xs text-slate-600 print:text-slate-500">Generated {generatedDate}</div>
-          </div>
-        </div>
-
-        <div>
-          <h1 className="text-3xl font-bold text-white print:text-slate-900 uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
-          {location && <div className="text-sm text-slate-500 print:text-slate-600 mt-1">{location}</div>}
-        </div>
-
-        {/* Single column for print regardless of the printing device's own screen width —
-            paper is generally narrower than a desktop viewport, so keeping the 2-column
-            grid for print (the md: breakpoint doesn't know it's paper, not a display) is
-            what was cramming/cutting off charts. */}
-        <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-1 gap-4 print:gap-6">
-          {(Object.keys(METRIC_INFO) as MetricKey[]).map((key) => (
-            <div key={key} className="print:break-inside-avoid">
-              <MetricChartPanel metricKey={key} metrics={metrics} />
-            </div>
-          ))}
-        </div>
+      <div className="print:hidden p-4 rounded-xl border border-slate-800 bg-slate-900 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <span className="text-sm font-semibold text-slate-400">Metrics to include:</span>
+        {ALL_METRIC_KEYS.map((key) => (
+          <label key={key} className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={selectedMetrics.includes(key)}
+              onChange={() => toggleMetric(key)}
+              className="accent-red-600 w-4 h-4"
+            />
+            {METRIC_INFO[key].name}
+          </label>
+        ))}
       </div>
+
+      {pages.length === 0 && (
+        <div className="p-8 text-center text-slate-500 rounded-xl border border-slate-800 bg-slate-900">
+          Select at least one metric to include in the report.
+        </div>
+      )}
+
+      {pages.map((pageKeys, pageIndex) => (
+        <div
+          key={pageIndex}
+          className={`p-8 print:p-0 rounded-2xl print:rounded-none border print:border-0 border-red-900/30 bg-slate-900 print:bg-white space-y-8 ${
+            pageIndex < pages.length - 1 ? 'print:break-after-page' : ''
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 print:border-slate-300 pb-6">
+            <div className="flex items-center gap-4">
+              <div className="relative w-16 h-16 shrink-0">
+                <Image src="/gvn-logo-wolf.png" alt="GVN Wolf Logo" fill className="object-contain" />
+              </div>
+              <div className="relative w-40 h-8">
+                <Image src="/gvn-logo-letters.png" alt="GVN Performance" fill className="object-contain" />
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-slate-500 print:text-slate-600 uppercase tracking-wider">Athlete Report Card</div>
+              <div className="text-xs text-slate-600 print:text-slate-500">Generated {generatedDate}</div>
+            </div>
+          </div>
+
+          <div>
+            <h1 className="text-3xl font-bold text-white print:text-slate-900 uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
+            {location && <div className="text-sm text-slate-500 print:text-slate-600 mt-1">{location}</div>}
+          </div>
+
+          {/* 1 chart gets a single centered panel; 2 or 4 form a clean side-by-side grid
+              (on screen and when printed — paper is roughly desktop-width in CSS pixels,
+              so forcing 2 columns for print here is what actually makes charts sit "nicely
+              next to each other" instead of stacking narrow on a wide sheet of paper). A
+              3rd chart just falls into the same 2-column grid (2 on the first row, 1 alone
+              on the second) rather than getting a special 3-up layout. */}
+          <div
+            className={
+              pageKeys.length === 1
+                ? 'max-w-xl mx-auto'
+                : 'grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-4 print:gap-6'
+            }
+          >
+            {pageKeys.map((key) => (
+              <div key={key} className="print:break-inside-avoid">
+                <MetricChartPanel metricKey={key} metrics={metrics} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
