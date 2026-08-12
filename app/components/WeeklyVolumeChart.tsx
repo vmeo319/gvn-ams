@@ -1,9 +1,11 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { bucketLogsByWeek, VolumeLog } from '@/lib/weeklyVolume'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from 'recharts'
+import { Download } from 'lucide-react'
+import { downloadSvgAsPng } from '@/lib/downloadChartPng'
 
 const WEEKS_SHOWN = 8
 
@@ -17,6 +19,12 @@ function formatWeekLabel(weekStart: unknown): string {
 export default function WeeklyVolumeChart({ athleteId }: { athleteId: string }) {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<{ weekStart: string; totalVolume: number }[]>([])
+  const chartRef = useRef<HTMLDivElement>(null)
+
+  function handleDownload() {
+    const svg = chartRef.current?.querySelector('svg')
+    if (svg) downloadSvgAsPng(svg, 'weekly-volume.png')
+  }
 
   useEffect(() => {
     async function load() {
@@ -36,13 +44,24 @@ export default function WeeklyVolumeChart({ athleteId }: { athleteId: string }) 
 
   return (
     <div className="p-6 rounded-xl border border-slate-800 bg-slate-900 space-y-4">
-      <h2 className="text-lg font-semibold">Weekly Volume</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Weekly Volume</h2>
+        {!loading && data.length > 0 && (
+          <button
+            onClick={handleDownload}
+            title="Download as PNG"
+            className="print:hidden p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        )}
+      </div>
       {loading && <div className="text-sm text-slate-500">Loading...</div>}
       {!loading && data.length === 0 && (
         <div className="text-sm text-slate-500">No logged sets yet.</div>
       )}
       {!loading && data.length > 0 && (
-        <div className="h-64 w-full">
+        <div ref={chartRef} className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />

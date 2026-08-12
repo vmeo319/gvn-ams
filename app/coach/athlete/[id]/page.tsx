@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { ArrowLeft, Copy, UserPlus } from 'lucide-react'
+import { ArrowLeft, Copy, UserPlus, FileText } from 'lucide-react'
 import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
 import TrendBadge from '@/app/components/TrendBadge'
 import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
@@ -99,6 +99,13 @@ export default function CoachAthleteDetailPage() {
           {athleteName ? `${athleteName} — Coach View` : 'Athlete Detail'}
         </h1>
         <div className="flex items-center gap-3">
+          <Link
+            href={`/coach/athlete/${athleteId}/report-card`}
+            className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Athlete Report Card</span>
+          </Link>
           <button
             onClick={() => setInviteOpen((v) => !v)}
             className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"
