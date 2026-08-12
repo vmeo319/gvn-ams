@@ -12,6 +12,7 @@ interface LogRow {
   weight_lbs: number
   est_1rm: number
   logged_at: string
+  notes: string | null
 }
 
 function formatDate(iso: unknown) {
@@ -47,7 +48,7 @@ export default function ExerciseLogModal({
     setHistoryLoading(true)
     const { data } = await supabase
       .from('athlete_exercise_logs')
-      .select('id, reps, weight_lbs, est_1rm, logged_at')
+      .select('id, reps, weight_lbs, est_1rm, logged_at, notes')
       .eq('athlete_id', athleteId)
       .eq('exercise_name', exerciseName)
       .order('logged_at', { ascending: true })
@@ -193,17 +194,26 @@ export default function ExerciseLogModal({
                         <th className="py-1.5">Est. 1RM</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800">
+                    <tbody>
                       {history
                         .slice()
                         .reverse()
                         .map((h) => (
-                          <tr key={h.id}>
-                            <td className="py-1.5 pr-2 text-slate-400">{formatDate(h.logged_at)}</td>
-                            <td className="py-1.5 pr-2 text-slate-200">{h.reps}</td>
-                            <td className="py-1.5 pr-2 text-slate-200">{h.weight_lbs}</td>
-                            <td className="py-1.5 text-slate-200">{h.est_1rm}</td>
-                          </tr>
+                          <React.Fragment key={h.id}>
+                            <tr className={h.notes ? '' : 'border-b border-slate-800'}>
+                              <td className="py-1.5 pr-2 text-slate-400">{formatDate(h.logged_at)}</td>
+                              <td className="py-1.5 pr-2 text-slate-200">{h.reps}</td>
+                              <td className="py-1.5 pr-2 text-slate-200">{h.weight_lbs}</td>
+                              <td className="py-1.5 text-slate-200">{h.est_1rm}</td>
+                            </tr>
+                            {h.notes && (
+                              <tr className="border-b border-slate-800">
+                                <td colSpan={4} className="pb-1.5 pt-0 text-xs text-slate-500 italic">
+                                  {h.notes}
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         ))}
                     </tbody>
                   </table>
