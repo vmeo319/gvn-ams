@@ -38,10 +38,10 @@ export default function MetricChartPanel({ metricKey, metrics }: { metricKey: Me
   }
 
   return (
-    <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-3">
+    <div className="p-5 rounded-xl border border-slate-800 print:border-slate-300 bg-slate-900 print:bg-white space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-medium text-slate-400">{info.name}</div>
+          <div className="text-sm font-medium text-slate-400 print:text-slate-600">{info.name}</div>
           <div className="text-2xl font-bold mt-0.5" style={{ color: info.color }}>
             {summaryValue > 0 ? `${summaryValue.toFixed(info.decimals)} ${info.unit}` : '--'}
           </div>

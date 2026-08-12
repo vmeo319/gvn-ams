@@ -67,7 +67,13 @@ export default function AthleteReportCardPage() {
   const generatedDate = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="p-6 max-w-5xl mx-auto space-y-6 print:p-0 print:max-w-none">
+      <style>{`
+        @media print {
+          @page { margin: 0.4in; }
+        }
+      `}</style>
+
       <div className="print:hidden flex items-center justify-between">
         <Link
           href={`/coach/athlete/${athleteId}`}
@@ -85,8 +91,8 @@ export default function AthleteReportCardPage() {
         </button>
       </div>
 
-      <div className="p-8 rounded-2xl border border-red-900/30 bg-slate-900 space-y-8">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-6">
+      <div className="p-8 print:p-0 rounded-2xl print:rounded-none border print:border-0 border-red-900/30 bg-slate-900 print:bg-white space-y-8">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 print:border-slate-300 pb-6">
           <div className="flex items-center gap-4">
             <div className="relative w-16 h-16 shrink-0">
               <Image src="/gvn-logo-wolf.png" alt="GVN Wolf Logo" fill className="object-contain" />
@@ -96,19 +102,25 @@ export default function AthleteReportCardPage() {
             </div>
           </div>
           <div className="text-right">
-            <div className="text-xs text-slate-500 uppercase tracking-wider">Athlete Report Card</div>
-            <div className="text-xs text-slate-600">Generated {generatedDate}</div>
+            <div className="text-xs text-slate-500 print:text-slate-600 uppercase tracking-wider">Athlete Report Card</div>
+            <div className="text-xs text-slate-600 print:text-slate-500">Generated {generatedDate}</div>
           </div>
         </div>
 
         <div>
-          <h1 className="text-3xl font-bold text-white uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
-          {location && <div className="text-sm text-slate-500 mt-1">{location}</div>}
+          <h1 className="text-3xl font-bold text-white print:text-slate-900 uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
+          {location && <div className="text-sm text-slate-500 print:text-slate-600 mt-1">{location}</div>}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Single column for print regardless of the printing device's own screen width —
+            paper is generally narrower than a desktop viewport, so keeping the 2-column
+            grid for print (the md: breakpoint doesn't know it's paper, not a display) is
+            what was cramming/cutting off charts. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-1 gap-4 print:gap-6">
           {(Object.keys(METRIC_INFO) as MetricKey[]).map((key) => (
-            <MetricChartPanel key={key} metricKey={key} metrics={metrics} />
+            <div key={key} className="print:break-inside-avoid">
+              <MetricChartPanel metricKey={key} metrics={metrics} />
+            </div>
           ))}
         </div>
       </div>
