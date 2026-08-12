@@ -9,6 +9,7 @@ import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsD
 import TrendBadge from '@/app/components/TrendBadge'
 import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
 import AthleteWorkoutPanel from '@/app/components/AthleteWorkoutPanel'
+import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
 import { createParentInviteAction } from '@/app/coach/actions'
 
 export default function CoachAthleteDetailPage() {
@@ -166,6 +167,8 @@ export default function CoachAthleteDetailPage() {
       <MetricsDashboard metrics={metrics} loading={loading} />
 
       <AthleteWorkoutPanel athleteId={athleteId} coachId={coachId!} />
+
+      <WeeklyVolumeChart athleteId={athleteId} />
 
       <AthleteNotesPanel athleteId={athleteId} authorId={coachId!} />
     </div>

@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { LogOut, ArrowLeft } from 'lucide-react'
 import MetricsDashboard, { Metric } from '@/app/components/MetricsDashboard'
+import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
 
 export default function AthletePage() {
   const router = useRouter()
@@ -13,6 +14,7 @@ export default function AthletePage() {
   const [loading, setLoading] = useState(true)
   const [isCoach, setIsCoach] = useState(false)
   const [athleteName, setAthleteName] = useState('')
+  const [userId, setUserId] = useState<string | null>(null)
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
@@ -25,6 +27,7 @@ export default function AthletePage() {
       const { data: { user } } = await supabase.auth.getUser()
 
       if (user) {
+        setUserId(user.id)
         const { data } = await supabase
           .from('performance_metrics')
           .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches')
@@ -77,6 +80,8 @@ export default function AthletePage() {
       </div>
 
       <MetricsDashboard metrics={metrics} loading={loading} />
+
+      {userId && <WeeklyVolumeChart athleteId={userId} />}
     </div>
   )
 }

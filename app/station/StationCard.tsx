@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { X } from 'lucide-react'
 import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
+import ExerciseLogModal from './ExerciseLogModal'
 
 interface Week {
   id: string
@@ -38,6 +39,7 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null)
   const [exercises, setExercises] = useState<ExerciseRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [logModalExercise, setLogModalExercise] = useState<ExerciseRow | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -197,7 +199,11 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
             {blocks.map((block) => (
               <div key={block.label} className="rounded-lg border border-slate-800 overflow-hidden">
                 {block.rows.map((row) => (
-                  <div key={row.id} className="px-3 py-2 border-b border-slate-800 last:border-b-0 bg-slate-950/40">
+                  <div
+                    key={row.id}
+                    onClick={() => setLogModalExercise(row)}
+                    className="px-3 py-2 border-b border-slate-800 last:border-b-0 bg-slate-950/40 cursor-pointer hover:bg-slate-900 transition"
+                  >
                     <div className="flex items-center gap-2">
                       <span className="w-6 h-6 shrink-0 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center justify-center">
                         {block.label}
@@ -217,6 +223,16 @@ export default function StationCard({ athleteId, onRemove }: { athleteId: string
             ))}
           </div>
         </>
+      )}
+
+      {logModalExercise && (
+        <ExerciseLogModal
+          athleteId={athleteId}
+          athleteName={athleteName}
+          workoutExerciseId={logModalExercise.id}
+          exerciseName={logModalExercise.exercise_name}
+          onClose={() => setLogModalExercise(null)}
+        />
       )}
     </div>
   )
