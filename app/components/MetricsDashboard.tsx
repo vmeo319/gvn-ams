@@ -8,14 +8,21 @@ export interface Metric {
   iso_belt_squat_peak_force: number | null
   top_speed: number | null
   cmj_height_inches: number | null
+  weight_lbs: number | null
 }
 
-export type MetricKey = 'iso' | 'cmj' | 'top_speed'
+export type MetricKey = 'iso' | 'cmj' | 'top_speed' | 'weight'
 
-export const METRIC_INFO: Record<MetricKey, { field: keyof Metric; name: string; unit: string; color: string; decimals: number }> = {
-  iso: { field: 'iso_belt_squat_peak_force', name: 'ISO Force (N/kg)', unit: 'N/kg', color: '#ef4444', decimals: 1 },
-  cmj: { field: 'cmj_height_inches', name: 'Jump Height (in)', unit: 'in', color: '#3b82f6', decimals: 2 },
-  top_speed: { field: 'top_speed', name: 'Top Speed (mph)', unit: 'mph', color: '#10b981', decimals: 2 },
+export const METRIC_INFO: Record<
+  MetricKey,
+  { field: keyof Metric; name: string; unit: string; color: string; decimals: number; summaryMode: 'max' | 'latest' }
+> = {
+  iso: { field: 'iso_belt_squat_peak_force', name: 'ISO Force (N/kg)', unit: 'N/kg', color: '#ef4444', decimals: 1, summaryMode: 'max' },
+  cmj: { field: 'cmj_height_inches', name: 'Jump Height (in)', unit: 'in', color: '#3b82f6', decimals: 2, summaryMode: 'max' },
+  top_speed: { field: 'top_speed', name: 'Top Speed (mph)', unit: 'mph', color: '#10b981', decimals: 2, summaryMode: 'max' },
+  // A "best-ever" reading doesn't mean anything for bodyweight — the current value is what
+  // matters, so its summary card shows the most recent entry instead of the max.
+  weight: { field: 'weight_lbs', name: 'Weight (lbs)', unit: 'lbs', color: '#a855f7', decimals: 1, summaryMode: 'latest' },
 }
 
 export function formatTickDate(dateStr: unknown): string {
@@ -25,12 +32,20 @@ export function formatTickDate(dateStr: unknown): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+function latestValue(metrics: Metric[], field: keyof Metric): number {
+  const withValue = metrics.filter((m) => m[field] !== null && m[field] !== undefined)
+  if (withValue.length === 0) return 0
+  const latest = withValue.reduce((a, b) => (a.test_date > b.test_date ? a : b))
+  return latest[field] as number
+}
+
 export default function MetricsDashboard({ metrics, loading }: { metrics: Metric[]; loading: boolean }) {
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>('iso')
 
   const maxTopSpeed = metrics.length ? Math.max(...metrics.map((m) => m.top_speed || 0)) : 0
   const maxIso = metrics.length ? Math.max(...metrics.map((m) => m.iso_belt_squat_peak_force || 0)) : 0
   const maxJump = metrics.length ? Math.max(...metrics.map((m) => m.cmj_height_inches || 0)) : 0
+  const currentWeight = latestValue(metrics, 'weight_lbs')
 
   // Only the dates where the currently selected metric actually has a value — this keeps
   // every plotted point genuinely connected (no gaps from other metrics' null entries)
@@ -49,7 +64,7 @@ export default function MetricsDashboard({ metrics, loading }: { metrics: Metric
   return (
     <>
       {/* Summary Metric Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div
           onClick={() => setSelectedMetric('iso')}
           className={`p-5 rounded-xl border cursor-pointer transition ${selectedMetric === 'iso' ? 'border-red-500 bg-red-950/20' : 'border-slate-800 bg-slate-900'}`}
@@ -77,6 +92,16 @@ export default function MetricsDashboard({ metrics, loading }: { metrics: Metric
           <div className="text-sm font-medium text-slate-400">Max Top Speed</div>
           <div className="text-3xl font-bold text-emerald-500 mt-1">
             {maxTopSpeed > 0 ? `${maxTopSpeed.toFixed(2)} mph` : '--'}
+          </div>
+        </div>
+
+        <div
+          onClick={() => setSelectedMetric('weight')}
+          className={`p-5 rounded-xl border cursor-pointer transition ${selectedMetric === 'weight' ? 'border-purple-500 bg-purple-950/20' : 'border-slate-800 bg-slate-900'}`}
+        >
+          <div className="text-sm font-medium text-slate-400">Current Weight</div>
+          <div className="text-3xl font-bold text-purple-500 mt-1">
+            {currentWeight > 0 ? `${currentWeight.toFixed(1)} lbs` : '--'}
           </div>
         </div>
       </div>

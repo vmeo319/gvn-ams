@@ -66,17 +66,17 @@ Deno.serve(async (req) => {
     // 3. Load profiles
     const { data: allProfiles } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, weight_lbs')
+      .select('id, first_name, last_name')
 
-    const profileMap = new Map<string, { id: string; weightLbs: number | null }>()
-    const profilesByLastName = new Map<string, { firstName: string; id: string; weightLbs: number | null }[]>()
+    const profileMap = new Map<string, { id: string }>()
+    const profilesByLastName = new Map<string, { firstName: string; id: string }[]>()
     allProfiles?.forEach((p) => {
       if (p.first_name && p.last_name) {
         const first = p.first_name.toLowerCase().trim()
         const last = p.last_name.toLowerCase().trim()
-        profileMap.set(`${first}_${last}`, { id: p.id, weightLbs: p.weight_lbs })
+        profileMap.set(`${first}_${last}`, { id: p.id })
         if (!profilesByLastName.has(last)) profilesByLastName.set(last, [])
-        profilesByLastName.get(last)!.push({ firstName: first, id: p.id, weightLbs: p.weight_lbs })
+        profilesByLastName.get(last)!.push({ firstName: first, id: p.id })
       }
     })
 
@@ -96,6 +96,10 @@ Deno.serve(async (req) => {
     // Newtons -> pounds: N / 9.80665 (m/s^2) * 2.20462 (kg->lb) = N * 0.224809
     const N_TO_LBS = 0.224809
     const latestWeightByAthlete = new Map<string, { timestamp: number; weightLbs: number }>()
+    // Per-date weight (keyed the same as aggregatedMetrics' sessionKey) so each
+    // performance_metrics row gets the weight actually measured that day, not a single
+    // snapshot applied to every row in the run.
+    const weightByDate = new Map<string, { timestamp: number; weightLbs: number }>()
 
     for (const test of tests) {
       // Reps get marked inactive when a coach invalidates a mis-fire or bad attempt in
@@ -169,7 +173,7 @@ Deno.serve(async (req) => {
         const candidates = profilesByLastName.get(lastName) || []
         const nicknameHit = candidates.find((c) => firstNamesMatch(c.firstName, firstName))
         if (nicknameHit) {
-          athleteRecord = { id: nicknameHit.id, weightLbs: nicknameHit.weightLbs }
+          athleteRecord = { id: nicknameHit.id }
         } else {
           for (const [key, val] of profileMap.entries()) {
             if (key.includes(firstName) && key.includes(lastName)) {
@@ -182,24 +186,46 @@ Deno.serve(async (req) => {
 
       if (!athleteRecord) continue
 
-      // Any isometric test reports the athlete's bodyweight via "System Weight(N)" —
-      // keep only the most recent one per athlete across this sync's fetch window.
+      // Computed here (not just inside the CMJ/ISO block below) since a weight-only
+      // isometric test — not CMJ, not ISO-belt-squat-45 — still needs a session key to
+      // record that date's weight against.
+      let testDate = new Date().toISOString().split('T')[0]
+      if (test.timestamp) {
+        testDate = new Date(test.timestamp * 1000).toISOString().split('T')[0]
+      } else if (test.test_date || test.date || test.Date) {
+        const rawD = test.test_date || test.date || test.Date
+        if (typeof rawD === 'string' && rawD.includes('/')) {
+          const [m, d, y] = rawD.split('/')
+          testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+        } else {
+          testDate = new Date(rawD).toISOString().split('T')[0]
+        }
+      }
+      const sessionKey = `${athleteRecord.id}_${testDate}`
+
+      // Any isometric test reports the athlete's bodyweight via "System Weight(N)" — record
+      // it against the specific date it was measured (weightByDate), not just the single
+      // most-recent-overall snapshot (latestWeightByAthlete, still used for profiles.weight_lbs).
       if (isAnyIsometric && typeof test.timestamp === 'number') {
         const rawSystemWeightN = Number(test['System Weight(N)'])
         // Floor at ~50lbs (222N) — a mis-fired rep where the athlete wasn't fully
         // settled on the plate yet reports a near-zero system weight (seen as low as 8lbs).
         if (!isNaN(rawSystemWeightN) && rawSystemWeightN > 222) {
+          const weightLbs = Number((rawSystemWeightN * N_TO_LBS).toFixed(1))
+
           const existingWeight = latestWeightByAthlete.get(athleteRecord.id)
           if (!existingWeight || test.timestamp > existingWeight.timestamp) {
-            latestWeightByAthlete.set(athleteRecord.id, {
-              timestamp: test.timestamp,
-              weightLbs: Number((rawSystemWeightN * N_TO_LBS).toFixed(1)),
-            })
+            latestWeightByAthlete.set(athleteRecord.id, { timestamp: test.timestamp, weightLbs })
+          }
+
+          const existingDateWeight = weightByDate.get(sessionKey)
+          if (!existingDateWeight || test.timestamp > existingDateWeight.timestamp) {
+            weightByDate.set(sessionKey, { timestamp: test.timestamp, weightLbs })
           }
         }
       }
 
-      if (!isPureCMJ && !isISOBeltSquat45) continue
+      if (!isPureCMJ && !isISOBeltSquat45 && !weightByDate.has(sessionKey)) continue
 
       let relForceVal: number | null = null
       let cmjHeightVal: number | null = null
@@ -234,21 +260,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      if (relForceVal !== null || cmjHeightVal !== null) {
-        let testDate = new Date().toISOString().split('T')[0]
-        if (test.timestamp) {
-          testDate = new Date(test.timestamp * 1000).toISOString().split('T')[0]
-        } else if (test.test_date || test.date || test.Date) {
-          const rawD = test.test_date || test.date || test.Date
-          if (typeof rawD === 'string' && rawD.includes('/')) {
-            const [m, d, y] = rawD.split('/')
-            testDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
-          } else {
-            testDate = new Date(rawD).toISOString().split('T')[0]
-          }
-        }
-
-        const sessionKey = `${athleteRecord.id}_${testDate}`
+      if (relForceVal !== null || cmjHeightVal !== null || weightByDate.has(sessionKey)) {
         const existing = aggregatedMetrics.get(sessionKey)
 
         const bestForce = Math.max(
@@ -259,13 +271,14 @@ Deno.serve(async (req) => {
           existing?.cmj_height_inches || 0,
           cmjHeightVal ? Number(cmjHeightVal.toFixed(2)) : 0
         )
+        const weightForDate = weightByDate.get(sessionKey)?.weightLbs ?? existing?.weight_lbs ?? null
 
         aggregatedMetrics.set(sessionKey, {
           athlete_id: athleteRecord.id,
           test_date: testDate,
           iso_belt_squat_peak_force: bestForce > 0 ? bestForce : null,
           cmj_height_inches: bestCMJ > 0 ? bestCMJ : null,
-          weight_lbs: athleteRecord.weightLbs,
+          weight_lbs: weightForDate,
         })
       }
     }

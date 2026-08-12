@@ -229,7 +229,6 @@ async function getOrCreateAthleteId(rawName: string, profilesMap: Map<string, st
       id: userId,
       first_name: firstName,
       last_name: lastName,
-      weight_lbs: 180,
       location: 'GVN- North Shore',
       role: 'athlete'
     })
@@ -259,15 +258,18 @@ export async function uploadMetricRows(rows: any[]) {
     let isoPeakForce = row.iso_belt_squat_peak_force || row.iso_peak_force || row['ISO Peak Force (N/kg)'] || row['Relative Peak Force (BW)']
     const v0Speed = row.v0_speed || row['V0 Speed']
     const cmjHeight = row.cmj_height_inches || row.cmj_height_in || row['CMJ Height (in)'] || row['Jump Height']
+    const weightLbs = row.weight_lbs || row['Weight'] || row['Weight (lbs)']
 
-    const metricPayload = {
+    const metricPayload: Record<string, any> = {
       athlete_id: athleteId,
       test_date: testDate,
       iso_belt_squat_peak_force: isoPeakForce ? Number(Number(isoPeakForce).toFixed(2)) : null,
       v0_speed: v0Speed ? Number(v0Speed) : null,
       cmj_height_inches: cmjHeight ? Number(Number(cmjHeight).toFixed(2)) : null,
-      weight_lbs: 180,
     }
+    // Only set weight_lbs when the row actually has it — omitting the key (rather than
+    // defaulting it) means an upsert conflict leaves an existing real reading untouched.
+    if (weightLbs) metricPayload.weight_lbs = Number(weightLbs)
 
     const { error } = await supabaseAdmin.from('performance_metrics').upsert(metricPayload, { onConflict: 'athlete_id, test_date' })
     if (!error) insertedCount++

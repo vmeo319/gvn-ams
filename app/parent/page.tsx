@@ -74,7 +74,7 @@ export default function ParentPage() {
       setMetricsLoading(true)
       const { data } = await supabase
         .from('performance_metrics')
-        .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches')
+        .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
         .eq('athlete_id', selectedId)
         .order('test_date', { ascending: true })
       setMetrics((data || []) as Metric[])

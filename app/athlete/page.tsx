@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { LogOut, ArrowLeft } from 'lucide-react'
 import MetricsDashboard, { Metric } from '@/app/components/MetricsDashboard'
 import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
+import WeightEntryForm from '@/app/components/WeightEntryForm'
 
 export default function AthletePage() {
   const router = useRouter()
@@ -21,6 +22,18 @@ export default function AthletePage() {
     router.push('/')
   }
 
+  async function loadMetrics(athleteId: string) {
+    const { data } = await supabase
+      .from('performance_metrics')
+      .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+      .eq('athlete_id', athleteId)
+      .order('test_date', { ascending: true })
+
+    if (data) {
+      setMetrics(data as Metric[])
+    }
+  }
+
   useEffect(() => {
     async function loadAthleteData() {
       setLoading(true)
@@ -28,15 +41,7 @@ export default function AthletePage() {
 
       if (user) {
         setUserId(user.id)
-        const { data } = await supabase
-          .from('performance_metrics')
-          .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches')
-          .eq('athlete_id', user.id)
-          .order('test_date', { ascending: true })
-
-        if (data) {
-          setMetrics(data as Metric[])
-        }
+        await loadMetrics(user.id)
 
         const { data: profile } = await supabase
           .from('profiles')
@@ -78,6 +83,8 @@ export default function AthletePage() {
           </button>
         </div>
       </div>
+
+      {userId && <WeightEntryForm athleteId={userId} onLogged={() => loadMetrics(userId)} />}
 
       <MetricsDashboard metrics={metrics} loading={loading} />
 
