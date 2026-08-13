@@ -86,9 +86,9 @@ export default function AthletePage() {
 
       {userId && <WeightEntryForm athleteId={userId} onLogged={() => loadMetrics(userId)} />}
 
-      <MetricsDashboard metrics={metrics} loading={loading} />
+      <MetricsDashboard metrics={metrics} loading={loading} athleteName={athleteName} />
 
-      {userId && <WeeklyVolumeChart athleteId={userId} />}
+      {userId && <WeeklyVolumeChart athleteId={userId} athleteName={athleteName} />}
     </div>
   )
 }

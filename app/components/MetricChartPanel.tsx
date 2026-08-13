@@ -13,7 +13,15 @@ function latestValue(metrics: Metric[], field: keyof Metric): number {
   return latest[field] as number
 }
 
-export default function MetricChartPanel({ metricKey, metrics }: { metricKey: MetricKey; metrics: Metric[] }) {
+export default function MetricChartPanel({
+  metricKey,
+  metrics,
+  athleteName,
+}: {
+  metricKey: MetricKey
+  metrics: Metric[]
+  athleteName?: string
+}) {
   const info = METRIC_INFO[metricKey]
   const chartRef = useRef<HTMLDivElement>(null)
 
@@ -33,8 +41,11 @@ export default function MetricChartPanel({ metricKey, metrics }: { metricKey: Me
   function handleDownload() {
     const svg = chartRef.current?.querySelector('svg')
     if (!svg) return
-    const safeName = info.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()
-    downloadSvgAsPng(svg, `${safeName}-trend.png`)
+    // Metric names like "ISO Force (N/kg)" contain a slash, which isn't a valid filename
+    // character on most OSes — sanitize just that, keep the rest human-readable.
+    const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '-')
+    const prefix = athleteName ? `Performance Report Card - ${sanitize(athleteName)}` : 'Performance Report Card'
+    downloadSvgAsPng(svg, `${prefix} - ${sanitize(info.name)}.png`)
   }
 
   return (

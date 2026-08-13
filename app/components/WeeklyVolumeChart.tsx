@@ -16,14 +16,17 @@ function formatWeekLabel(weekStart: unknown): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-export default function WeeklyVolumeChart({ athleteId }: { athleteId: string }) {
+export default function WeeklyVolumeChart({ athleteId, athleteName }: { athleteId: string; athleteName?: string }) {
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<{ weekStart: string; totalVolume: number }[]>([])
   const chartRef = useRef<HTMLDivElement>(null)
 
   function handleDownload() {
     const svg = chartRef.current?.querySelector('svg')
-    if (svg) downloadSvgAsPng(svg, 'weekly-volume.png')
+    if (!svg) return
+    const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '-')
+    const prefix = athleteName ? `Performance Report Card - ${sanitize(athleteName)}` : 'Performance Report Card'
+    downloadSvgAsPng(svg, `${prefix} - Weekly Volume.png`)
   }
 
   useEffect(() => {

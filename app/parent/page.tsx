@@ -126,7 +126,13 @@ export default function ParentPage() {
         <h2 className="text-xl font-semibold text-slate-300">{athletes[0].name}</h2>
       )}
 
-      {selectedId && <MetricsDashboard metrics={metrics} loading={metricsLoading} />}
+      {selectedId && (
+        <MetricsDashboard
+          metrics={metrics}
+          loading={metricsLoading}
+          athleteName={athletes.find((a) => a.id === selectedId)?.name}
+        />
+      )}
     </div>
   )
 }

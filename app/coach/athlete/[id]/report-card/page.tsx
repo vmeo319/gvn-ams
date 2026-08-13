@@ -23,9 +23,25 @@ export default function AthleteReportCardPage() {
   const [metrics, setMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedMetrics, setSelectedMetrics] = useState<MetricKey[]>(ALL_METRIC_KEYS)
+  const [preparingPrint, setPreparingPrint] = useState(false)
 
   function toggleMetric(key: MetricKey) {
     setSelectedMetrics((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+  }
+
+  // Recharts resizes each chart's SVG (via ResizeObserver) when the print media query
+  // changes the grid to 2 columns — that resize is asynchronous, and window.print() doesn't
+  // wait for it. Calling print immediately captured charts mid-resize (axis labels present,
+  // but no drawn lines — a blank-looking first page followed by a correctly-rendered second
+  // page once the resize caught up). Nudging a resize first and giving it a beat to settle
+  // avoids that race.
+  function handlePrint() {
+    setPreparingPrint(true)
+    window.dispatchEvent(new Event('resize'))
+    setTimeout(() => {
+      window.print()
+      setPreparingPrint(false)
+    }, 350)
   }
 
   useEffect(() => {
@@ -98,11 +114,12 @@ export default function AthleteReportCardPage() {
           <span>Back to Profile</span>
         </Link>
         <button
-          onClick={() => window.print()}
-          className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded-lg transition text-sm"
+          onClick={handlePrint}
+          disabled={preparingPrint}
+          className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded-lg transition text-sm disabled:opacity-50"
         >
           <Printer className="w-4 h-4" />
-          <span>Print / Save as PDF</span>
+          <span>{preparingPrint ? 'Preparing...' : 'Print / Save as PDF'}</span>
         </button>
       </div>
 
@@ -169,7 +186,7 @@ export default function AthleteReportCardPage() {
           >
             {pageKeys.map((key) => (
               <div key={key} className="print:break-inside-avoid">
-                <MetricChartPanel metricKey={key} metrics={metrics} />
+                <MetricChartPanel metricKey={key} metrics={metrics} athleteName={athleteName} />
               </div>
             ))}
           </div>

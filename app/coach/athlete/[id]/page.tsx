@@ -178,11 +178,11 @@ export default function CoachAthleteDetailPage() {
 
       <WeightEntryForm athleteId={athleteId} onLogged={loadMetrics} />
 
-      <MetricsDashboard metrics={metrics} loading={loading} />
+      <MetricsDashboard metrics={metrics} loading={loading} athleteName={athleteName} />
 
       <AthleteWorkoutPanel athleteId={athleteId} coachId={coachId!} />
 
-      <WeeklyVolumeChart athleteId={athleteId} />
+      <WeeklyVolumeChart athleteId={athleteId} athleteName={athleteName} />
 
       <AthleteNotesPanel athleteId={athleteId} authorId={coachId!} />
     </div>
