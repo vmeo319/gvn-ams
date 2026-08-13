@@ -49,7 +49,11 @@ export default function MetricChartPanel({
   }
 
   return (
-    <div className="p-5 rounded-xl border border-slate-800 print:border-slate-300 bg-slate-900 print:bg-white space-y-3">
+    // overflow-hidden is a hard containment boundary: even if a chart's SVG ever measures
+    // itself slightly wider than this card (seen when printing — the axis label width
+    // wasn't generous enough for some athletes' value ranges, e.g. "14.65" vs "90"), it gets
+    // clipped instead of visually bleeding into the neighboring card.
+    <div className="p-5 rounded-xl border border-slate-800 print:border-slate-300 bg-slate-900 print:bg-white space-y-3 overflow-hidden">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-medium text-slate-400 print:text-slate-600">{info.name}</div>
@@ -65,9 +69,9 @@ export default function MetricChartPanel({
           <Download className="w-4 h-4" />
         </button>
       </div>
-      <div ref={chartRef} className="h-56 w-full">
+      <div ref={chartRef} className="h-56 w-full overflow-hidden">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 30, left: 0 }}>
+          <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 30, left: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
             <XAxis
               dataKey="test_date"
@@ -80,7 +84,9 @@ export default function MetricChartPanel({
               interval="preserveStartEnd"
               minTickGap={20}
             />
-            <YAxis stroke="#94a3b8" domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={35} />
+            {/* Wide enough for a 5-6 character label ("14.65", "159") — too narrow here is
+                what let axis text spill outside its own chart on some athletes' data. */}
+            <YAxis stroke="#94a3b8" domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={46} />
             <Tooltip
               labelFormatter={formatTickDate}
               contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }}
