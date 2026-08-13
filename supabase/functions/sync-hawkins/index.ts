@@ -80,23 +80,22 @@ Deno.serve(async (req) => {
       }
     })
 
-    const aggregatedMetrics = new Map<
-      string,
-      {
-        athlete_id: string
-        test_date: string
-        iso_belt_squat_peak_force: number | null
-        cmj_height_inches: number | null
-        weight_lbs: number | null
-      }
-    >()
+    // Tracks only dates where THIS sync run actually found a fresh reading — never a
+    // null placeholder for "not tested today." A batch upsert applies one fixed column
+    // list to every row it's given, so if we ever included iso/cmj as null for a date
+    // that just had an unrelated bodyweight-only isometric test, the upsert would
+    // overwrite that date's real historical value with null on every re-sync. Keeping
+    // each metric in its own map (and later its own upsert, with only that metric's
+    // column) guarantees a sync can only ever write a column it has real data for.
+    const bestIsoBySession = new Map<string, { athleteId: string; testDate: string; value: number }>()
+    const bestCmjBySession = new Map<string, { athleteId: string; testDate: string; value: number }>()
 
     let matchedTestsCount = 0
 
     // Newtons -> pounds: N / 9.80665 (m/s^2) * 2.20462 (kg->lb) = N * 0.224809
     const N_TO_LBS = 0.224809
     const latestWeightByAthlete = new Map<string, { timestamp: number; weightLbs: number }>()
-    // Per-date weight (keyed the same as aggregatedMetrics' sessionKey) so each
+    // Per-date weight (keyed the same as the session-key maps below) so each
     // performance_metrics row gets the weight actually measured that day, not a single
     // snapshot applied to every row in the run.
     const weightByDate = new Map<string, { timestamp: number; weightLbs: number }>()
@@ -260,36 +259,44 @@ Deno.serve(async (req) => {
         }
       }
 
-      if (relForceVal !== null || cmjHeightVal !== null || weightByDate.has(sessionKey)) {
-        const existing = aggregatedMetrics.get(sessionKey)
-
-        const bestForce = Math.max(
-          existing?.iso_belt_squat_peak_force || 0,
-          relForceVal ? Number(relForceVal.toFixed(2)) : 0
-        )
-        const bestCMJ = Math.max(
-          existing?.cmj_height_inches || 0,
-          cmjHeightVal ? Number(cmjHeightVal.toFixed(2)) : 0
-        )
-        const weightForDate = weightByDate.get(sessionKey)?.weightLbs ?? existing?.weight_lbs ?? null
-
-        aggregatedMetrics.set(sessionKey, {
-          athlete_id: athleteRecord.id,
-          test_date: testDate,
-          iso_belt_squat_peak_force: bestForce > 0 ? bestForce : null,
-          cmj_height_inches: bestCMJ > 0 ? bestCMJ : null,
-          weight_lbs: weightForDate,
-        })
+      if (relForceVal !== null) {
+        const value = Number(relForceVal.toFixed(2))
+        const existing = bestIsoBySession.get(sessionKey)
+        if (!existing || value > existing.value) {
+          bestIsoBySession.set(sessionKey, { athleteId: athleteRecord.id, testDate, value })
+        }
+      }
+      if (cmjHeightVal !== null) {
+        const value = Number(cmjHeightVal.toFixed(2))
+        const existing = bestCmjBySession.get(sessionKey)
+        if (!existing || value > existing.value) {
+          bestCmjBySession.set(sessionKey, { athleteId: athleteRecord.id, testDate, value })
+        }
       }
     }
 
-    const metricsToInsert = Array.from(aggregatedMetrics.values())
+    const isoRows = Array.from(bestIsoBySession.values()).map((r) => ({
+      athlete_id: r.athleteId,
+      test_date: r.testDate,
+      iso_belt_squat_peak_force: r.value,
+    }))
+    const cmjRows = Array.from(bestCmjBySession.values()).map((r) => ({
+      athlete_id: r.athleteId,
+      test_date: r.testDate,
+      cmj_height_inches: r.value,
+    }))
+    const weightRows = Array.from(weightByDate.entries()).map(([sessionKey, w]) => {
+      const [athleteId, testDate] = sessionKey.split('_')
+      return { athlete_id: athleteId, test_date: testDate, weight_lbs: w.weightLbs }
+    })
+
+    const touchedSessions = new Set<string>()
     let insertedCount = 0
 
-    if (metricsToInsert.length > 0) {
+    async function upsertRows(rows: Record<string, unknown>[]) {
       const chunkSize = 500
-      for (let i = 0; i < metricsToInsert.length; i += chunkSize) {
-        const chunk = metricsToInsert.slice(i, i + chunkSize)
+      for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize)
         const { error } = await supabase
           .from('performance_metrics')
           .upsert(chunk, { onConflict: 'athlete_id, test_date' })
@@ -299,8 +306,13 @@ Deno.serve(async (req) => {
           if (insertErr) console.error('Batch insert error:', insertErr.message)
         }
       }
-      insertedCount = metricsToInsert.length
+      for (const row of rows) touchedSessions.add(`${row.athlete_id}_${row.test_date}`)
     }
+
+    await upsertRows(isoRows)
+    await upsertRows(cmjRows)
+    await upsertRows(weightRows)
+    insertedCount = touchedSessions.size
 
     // Autofill profiles.weight_lbs from each athlete's most recent isometric test's
     // measured System Weight(N), converted to pounds.

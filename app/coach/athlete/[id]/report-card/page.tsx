@@ -65,7 +65,12 @@ export default function AthleteReportCardPage() {
         .select('first_name, last_name, location_id')
         .eq('id', athleteId)
         .single()
-      setAthleteName(`${athlete?.first_name || ''} ${athlete?.last_name || ''}`.trim())
+      const name = `${athlete?.first_name || ''} ${athlete?.last_name || ''}`.trim()
+      setAthleteName(name)
+      // Chrome's "Save as PDF" defaults the save filename to document.title — without this
+      // every report card downloads as the site-wide title ("GVN Performance") regardless
+      // of which athlete it's for.
+      if (name) document.title = `Performance Report Card - ${name}`
 
       if (athlete?.location_id) {
         const { data: loc } = await supabase.from('locations').select('name').eq('id', athlete.location_id).single()
@@ -98,10 +103,20 @@ export default function AthleteReportCardPage() {
   }
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6 print:p-0 print:max-w-none">
+    <div className="report-card-root p-6 max-w-5xl mx-auto space-y-6 print:p-0 print:max-w-none">
       <style>{`
         @media print {
           @page { margin: 0.4in; }
+          /* !important guarantees this wins over max-w-5xl regardless of Tailwind's
+             utility cascade order — printed output was rendering as a narrow, centered
+             card (roughly half the page width) instead of filling the printable area,
+             which points at the max-width cap surviving into print somehow. */
+          .report-card-root {
+            max-width: none !important;
+            width: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+          }
         }
       `}</style>
 
