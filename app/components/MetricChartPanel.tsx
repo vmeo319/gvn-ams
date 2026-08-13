@@ -53,10 +53,10 @@ export default function MetricChartPanel({
     // itself slightly wider than this card (seen when printing — the axis label width
     // wasn't generous enough for some athletes' value ranges, e.g. "14.65" vs "90"), it gets
     // clipped instead of visually bleeding into the neighboring card.
-    <div className="p-5 rounded-xl border border-slate-800 print:border-slate-300 bg-slate-900 print:bg-white space-y-3 overflow-hidden">
+    <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-3 overflow-hidden">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-medium text-slate-400 print:text-slate-600">{info.name}</div>
+          <div className="text-sm font-medium text-slate-400">{info.name}</div>
           <div className="text-2xl font-bold mt-0.5" style={{ color: info.color }}>
             {summaryValue > 0 ? `${summaryValue.toFixed(info.decimals)} ${info.unit}` : '--'}
           </div>

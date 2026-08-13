@@ -46,9 +46,9 @@ export default function WeeklyVolumeChart({ athleteId, athleteName }: { athleteI
   }, [athleteId])
 
   return (
-    <div className="p-6 rounded-xl border border-slate-800 print:border-slate-300 bg-slate-900 print:bg-white space-y-4">
+    <div className="p-6 rounded-xl border border-slate-800 bg-slate-900 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white print:text-slate-900">Weekly Volume</h2>
+        <h2 className="text-lg font-semibold text-white">Weekly Volume</h2>
         {!loading && data.length > 0 && (
           <button
             onClick={handleDownload}
