@@ -328,6 +328,15 @@ Deno.serve(async (req) => {
       if (!weightErr) weightsUpdated++
     }
 
+    // The force plate mis-fires occasionally (an athlete not fully settled, a stray rep) —
+    // only skip this when nothing new came in this run, since that's the only thing that
+    // could have introduced a fresh outlier.
+    let weightOutliersRemoved = 0
+    if (weightRows.length > 0) {
+      const { data: cleaned, error: cleanErr } = await supabase.rpc('clean_weight_outliers')
+      if (!cleanErr && cleaned) weightOutliersRemoved = cleaned.length
+    }
+
     await supabase.from('import_status').upsert(
       { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: triggeredBy, records_count: insertedCount },
       { onConflict: 'source, triggered_by' }
@@ -340,6 +349,7 @@ Deno.serve(async (req) => {
         matchedTestsCount,
         upsertedMetrics: insertedCount,
         weightsUpdated,
+        weightOutliersRemoved,
       }),
       { headers: { 'Content-Type': 'application/json' } }
     )
