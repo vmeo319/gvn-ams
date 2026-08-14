@@ -58,14 +58,28 @@ export default function CompleteInvite() {
 
     setSubmitting(true)
     const { error } = await supabase.auth.updateUser({ password })
-    setSubmitting(false)
-
     if (error) {
+      setSubmitting(false)
       setErrorMsg(error.message)
       return
     }
 
-    router.push('/athlete')
+    const { data: { user } } = await supabase.auth.getUser()
+    setSubmitting(false)
+
+    if (!user) {
+      router.push('/')
+      return
+    }
+
+    // This invite link is reused for coach accounts now (created from /admin), not just
+    // athletes — route by actual role instead of always assuming athlete.
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+    if (profile?.role === 'coach' || profile?.role === 'admin') {
+      router.push('/coach')
+    } else {
+      router.push('/athlete')
+    }
   }
 
   return (

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
@@ -178,6 +178,7 @@ export default function CoachDashboard() {
   const [workoutByAthlete, setWorkoutByAthlete] = useState<Map<string, { name: string; weeksCompleted: number }>>(new Map())
   const [showLevels, setShowLevels] = useState(false)
   const [pendingRequestCount, setPendingRequestCount] = useState(0)
+  const [isAdmin, setIsAdmin] = useState(false)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -227,10 +228,14 @@ export default function CoachDashboard() {
     fetchWorkouts()
     fetchPendingRequestCount()
 
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (user?.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase())) {
         setSelectedLocations(['GVN- North Shore'])
         setShowLevels(true)
+      }
+      if (user) {
+        const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+        setIsAdmin(profile?.role === 'admin')
       }
     })
   }, [])
@@ -879,6 +884,16 @@ export default function CoachDashboard() {
               <UserCircle2 className="w-4 h-4 text-cyan-400" />
               <span>Athlete View</span>
             </Link>
+
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="flex items-center space-x-2 bg-red-950/40 hover:bg-red-950/70 text-white font-semibold px-4 py-2.5 rounded-lg border border-red-800/60 transition"
+              >
+                <ShieldCheck className="w-4 h-4 text-red-400" />
+                <span>Admin</span>
+              </Link>
+            )}
 
             <button
               onClick={handleSignOut}

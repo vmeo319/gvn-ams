@@ -37,6 +37,14 @@ export async function proxy(request: NextRequest) {
     .single()
 
   const isCoach = profile?.role === 'coach' || profile?.role === 'admin'
+  const isAdmin = profile?.role === 'admin'
+
+  // Checked before the general /coach gate below — /admin is a subset of /coach's access
+  // requirement (admin implies coach) but strictly narrower, so it needs its own check
+  // rather than falling through to isCoach.
+  if (pathname.startsWith('/admin') && !isAdmin) {
+    return NextResponse.redirect(new URL('/coach', request.url))
+  }
 
   if (pathname.startsWith('/coach') && !isCoach) {
     return NextResponse.redirect(new URL('/athlete', request.url))
@@ -49,5 +57,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/coach/:path*', '/athlete/:path*'],
+  matcher: ['/coach/:path*', '/athlete/:path*', '/admin/:path*'],
 }
