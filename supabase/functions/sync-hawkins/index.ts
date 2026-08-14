@@ -204,10 +204,11 @@ Deno.serve(async (req) => {
       }
       const sessionKey = `${athleteRecord.id}_${testDate}`
 
-      // Any isometric test reports the athlete's bodyweight via "System Weight(N)" — record
-      // it against the specific date it was measured (weightByDate), not just the single
-      // most-recent-overall snapshot (latestWeightByAthlete, still used for profiles.weight_lbs).
-      if (isAnyIsometric && typeof test.timestamp === 'number') {
+      // The force plate weighs the athlete on every rep, not just isometric ones — CMJ
+      // (jump) tests report the same "System Weight(N)" field. Pulling it from both sources
+      // gives more frequent weight readings than isometric tests alone, still merged into
+      // the one weight_lbs column/graph via weightByDate's per-date latest-wins logic below.
+      if ((isAnyIsometric || isPureCMJ) && typeof test.timestamp === 'number') {
         const rawSystemWeightN = Number(test['System Weight(N)'])
         // Floor at ~50lbs (222N) — a mis-fired rep where the athlete wasn't fully
         // settled on the plate yet reports a near-zero system weight (seen as low as 8lbs).
