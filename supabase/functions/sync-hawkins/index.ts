@@ -31,9 +31,11 @@ Deno.serve(async (req) => {
     }
 
     let lookbackDays = 90
+    let triggeredBy: 'auto' | 'manual' = 'auto'
     try {
       const body = await req.json()
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
+      if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
     } catch (_) {
       // Body empty or not JSON — default to 90 days for the steady-state nightly sync.
     }
@@ -326,7 +328,7 @@ Deno.serve(async (req) => {
     }
 
     await supabase.from('import_status').upsert(
-      { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: insertedCount },
+      { source: 'hawkins', last_imported_at: new Date().toISOString(), triggered_by: triggeredBy, records_count: insertedCount },
       { onConflict: 'source, triggered_by' }
     )
 

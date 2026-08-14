@@ -418,3 +418,47 @@ export async function uploadHawkinsScoreboardCSV(rows: any[]) {
 
   return { success: true, insertedCount, errors }
 }
+
+async function callSyncFunction(source: 'sync-hawkins' | 'sync-1080', body: Record<string, unknown>) {
+  const res = await fetch(`${supabaseUrl}/functions/v1/${source}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${serviceRoleKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json().catch(() => null)
+  return { ok: res.ok, status: res.status, json }
+}
+
+// Manually invokes the same edge functions the nightly cron jobs call, using the same
+// service-role bearer auth (supabase/migrations/20260805030000_fix_cron_jobs.sql) — lets
+// a coach force a sync from the dashboard without waiting for the schedule. Both edge
+// functions accept triggeredBy so this shows up correctly as "Manual" rather than
+// clobbering the real last-automatic-run timestamp.
+export async function triggerManualSyncAction(data: { source: 'sync-hawkins' | 'sync-1080' }) {
+  try {
+    if (data.source === 'sync-hawkins') {
+      const { ok, status, json } = await callSyncFunction('sync-hawkins', { triggeredBy: 'manual' })
+      if (!ok) return { success: false, error: formatError(json?.error || `HTTP ${status}`) }
+      return { success: true, result: json }
+    }
+
+    // 1080 is two steps in the real pipeline — enqueue (discover new/older sessions) then
+    // process_batch (fetch each session's real metrics and write them) — and only the
+    // latter ever touches import_status. Running just "enqueue" here would silently do
+    // nothing visible until the next 5-minute auto-drain cron picks it up and tags it
+    // 'auto', so this does both immediately and reports the processing step's result.
+    await callSyncFunction('sync-1080', { mode: 'enqueue', lookbackDays: 14 })
+    const { ok, status, json } = await callSyncFunction('sync-1080', {
+      mode: 'process_batch',
+      batchSize: 100,
+      triggeredBy: 'manual',
+    })
+    if (!ok) return { success: false, error: formatError(json?.error || `HTTP ${status}`) }
+    return { success: true, result: json }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}

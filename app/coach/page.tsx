@@ -4,10 +4,10 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck, RefreshCw } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV } from './actions'
+import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV, triggerManualSyncAction } from './actions'
 import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
 
 // These 3 coaches only work out of North Shore day-to-day, so default the dashboard's
@@ -179,6 +179,8 @@ export default function CoachDashboard() {
   const [showLevels, setShowLevels] = useState(false)
   const [pendingRequestCount, setPendingRequestCount] = useState(0)
   const [isAdmin, setIsAdmin] = useState(false)
+  const [syncRunning, setSyncRunning] = useState<'sync-hawkins' | 'sync-1080' | null>(null)
+  const [syncResult, setSyncResult] = useState<{ source: string; success: boolean; msg: string } | null>(null)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -259,6 +261,20 @@ export default function CoachDashboard() {
   const fetchLocations = async () => {
     const { data: locs, error } = await supabase.from('locations').select('id, name').order('name')
     if (!error && locs) setLocationOptions(locs as LocationRow[])
+  }
+
+  const handleRunSync = async (source: 'sync-hawkins' | 'sync-1080', label: string) => {
+    setSyncRunning(source)
+    setSyncResult(null)
+    const res = await triggerManualSyncAction({ source })
+    setSyncRunning(null)
+    if (!res.success) {
+      setSyncResult({ source, success: false, msg: res.error || `${label} sync failed.` })
+      return
+    }
+    setSyncResult({ source, success: true, msg: `${label} sync triggered — ${res.result ? JSON.stringify(res.result) : 'done.'}` })
+    fetchImportStatus()
+    fetchLeaderboard()
   }
 
   const fetchImportStatus = async () => {
@@ -781,41 +797,77 @@ export default function CoachDashboard() {
               </button>
 
               {importDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 flex flex-col gap-1 overflow-hidden">
-                  <button
-                    onClick={() => {
-                      setImportDropdownOpen(false)
-                      setHawkinsStatus(null)
-                      setHawkinsModalOpen(true)
-                    }}
-                    className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
-                  >
-                    <img src="/Hawkins-logo.png" alt="Hawkins" className="w-6 h-6 object-contain" />
-                    <div className="flex flex-col">
-                      <span>From Hawkins</span>
-                      <span className="text-[10px] font-normal text-slate-500">
-                        {formatOneImportLine(importStatus['hawkins_auto'], 'Auto')} · {formatOneImportLine(importStatus['hawkins_manual'], 'Manual')}
-                      </span>
+                <div className="absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 flex flex-col gap-1 overflow-hidden">
+                  {syncResult && (
+                    <div
+                      className={`px-2.5 py-2 rounded-lg text-[11px] break-all ${
+                        syncResult.success ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300'
+                      }`}
+                    >
+                      {syncResult.msg}
                     </div>
-                  </button>
+                  )}
 
-                  <button
-                    onClick={() => {
-                      setImportDropdownOpen(false)
-                      setTen80Status(null)
-                      setTen80Logs([])
-                      setTen80ModalOpen(true)
-                    }}
-                    className="flex items-center space-x-3 w-full p-2.5 rounded-lg hover:bg-slate-800 transition text-left text-sm font-medium text-slate-200"
-                  >
-                    <img src="/1080-logo.jpg" alt="1080 Motion" className="w-6 h-6 object-contain rounded-sm" />
-                    <div className="flex flex-col">
-                      <span>From 1080 Motion</span>
-                      <span className="text-[10px] font-normal text-slate-500">
-                        {formatOneImportLine(importStatus['1080_auto'], 'Auto')} · {formatOneImportLine(importStatus['1080_manual'], 'Manual')}
-                      </span>
-                    </div>
-                  </button>
+                  <div className="flex items-center w-full rounded-lg hover:bg-slate-800 transition">
+                    <button
+                      onClick={() => {
+                        setImportDropdownOpen(false)
+                        setHawkinsStatus(null)
+                        setHawkinsModalOpen(true)
+                      }}
+                      className="flex items-center space-x-3 flex-1 min-w-0 p-2.5 text-left text-sm font-medium text-slate-200"
+                    >
+                      <img src="/Hawkins-logo.png" alt="Hawkins" className="w-6 h-6 object-contain shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>From Hawkins</span>
+                        <span className="text-[10px] font-normal text-slate-500 truncate">
+                          {formatOneImportLine(importStatus['hawkins_auto'], 'Auto')} · {formatOneImportLine(importStatus['hawkins_manual'], 'Manual')}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleRunSync('sync-hawkins', 'Hawkins')
+                      }}
+                      disabled={syncRunning === 'sync-hawkins'}
+                      title="Run Hawkins sync now"
+                      className="p-2 mr-1 rounded-lg hover:bg-slate-700 text-cyan-400 shrink-0 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${syncRunning === 'sync-hawkins' ? 'animate-spin' : ''}`} />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center w-full rounded-lg hover:bg-slate-800 transition">
+                    <button
+                      onClick={() => {
+                        setImportDropdownOpen(false)
+                        setTen80Status(null)
+                        setTen80Logs([])
+                        setTen80ModalOpen(true)
+                      }}
+                      className="flex items-center space-x-3 flex-1 min-w-0 p-2.5 text-left text-sm font-medium text-slate-200"
+                    >
+                      <img src="/1080-logo.jpg" alt="1080 Motion" className="w-6 h-6 object-contain rounded-sm shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>From 1080 Motion</span>
+                        <span className="text-[10px] font-normal text-slate-500 truncate">
+                          {formatOneImportLine(importStatus['1080_auto'], 'Auto')} · {formatOneImportLine(importStatus['1080_manual'], 'Manual')}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleRunSync('sync-1080', '1080 Motion')
+                      }}
+                      disabled={syncRunning === 'sync-1080'}
+                      title="Run 1080 Motion sync now"
+                      className="p-2 mr-1 rounded-lg hover:bg-slate-700 text-orange-400 shrink-0 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${syncRunning === 'sync-1080' ? 'animate-spin' : ''}`} />
+                    </button>
+                  </div>
 
                   <div className="h-px w-full bg-slate-800/60 my-1"></div>
 

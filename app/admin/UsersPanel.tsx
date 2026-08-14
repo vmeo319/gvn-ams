@@ -1,10 +1,10 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Search, Copy, KeyRound } from 'lucide-react'
-import { updateUserRoleAction, sendPasswordResetLinkAction } from './actions'
+import { Search, Copy, KeyRound, MapPin, Check, ChevronDown } from 'lucide-react'
+import { updateUserRoleAction, sendPasswordResetLinkAction, updateProfileLocationsAction } from './actions'
 
 interface ProfileRow {
   id: string
@@ -31,35 +31,123 @@ const ROLE_BADGE_STYLES: Record<string, string> = {
   ipad: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
 }
 
+function LocationCell({
+  profileId,
+  selectedIds,
+  allLocations,
+  isOpen,
+  onToggleOpen,
+  onSaved,
+}: {
+  profileId: string
+  selectedIds: string[]
+  allLocations: LocationRow[]
+  isOpen: boolean
+  onToggleOpen: () => void
+  onSaved: (locationIds: string[]) => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!isOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) onToggleOpen()
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isOpen, onToggleOpen])
+
+  const names = allLocations.filter((l) => selectedIds.includes(l.id)).map((l) => l.name)
+  const label = names.length === 0 ? 'None' : names.join(', ')
+
+  async function toggle(locationId: string) {
+    const next = selectedIds.includes(locationId)
+      ? selectedIds.filter((id) => id !== locationId)
+      : [...selectedIds, locationId]
+    setSaving(true)
+    const res = await updateProfileLocationsAction({ profileId, locationIds: next })
+    setSaving(false)
+    if (res.success) onSaved(next)
+  }
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button
+        onClick={onToggleOpen}
+        disabled={saving}
+        className="flex items-center space-x-1.5 text-xs text-slate-300 hover:text-white transition disabled:opacity-50 max-w-[180px]"
+      >
+        <MapPin className="w-3 h-3 text-slate-500 shrink-0" />
+        <span className="truncate">{label}</span>
+        <ChevronDown className="w-3 h-3 text-slate-500 shrink-0" />
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 z-30 mt-1 w-56 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1.5 space-y-0.5">
+          {allLocations.length === 0 && (
+            <div className="px-2 py-1.5 text-xs text-slate-500">No locations yet — add one below.</div>
+          )}
+          {allLocations.map((loc) => {
+            const checked = selectedIds.includes(loc.id)
+            return (
+              <button
+                key={loc.id}
+                onClick={() => toggle(loc.id)}
+                disabled={saving}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition disabled:opacity-50"
+              >
+                <span>{loc.name}</span>
+                {checked && <Check className="w-3.5 h-3.5 text-red-500" />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function UsersPanel({ selfId }: { selfId: string }) {
   const [profiles, setProfiles] = useState<ProfileRow[]>([])
   const [locations, setLocations] = useState<LocationRow[]>([])
+  const [locationsByProfile, setLocationsByProfile] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('')
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [openLocationRowId, setOpenLocationRowId] = useState<string | null>(null)
   const [resetLink, setResetLink] = useState<{ name: string; link: string } | null>(null)
   const [error, setError] = useState('')
 
   async function load() {
     setLoading(true)
-    const [{ data: profileRows }, { data: locRows }] = await Promise.all([
+    const [{ data: profileRows }, { data: locRows }, { data: linkRows }] = await Promise.all([
       supabase.from('profiles').select('id, first_name, last_name, email, role, location_id').order('first_name'),
-      supabase.from('locations').select('id, name'),
+      supabase.from('locations').select('id, name').order('name'),
+      supabase.from('athlete_locations').select('profile_id, location_id'),
     ])
     setProfiles((profileRows || []) as ProfileRow[])
     setLocations((locRows || []) as LocationRow[])
+
+    // athlete_locations only tracks explicitly-assigned extras — a profile that's never had
+    // its locations edited yet still has a single primary location_id, so fall back to that
+    // rather than showing "None" for every account that predates this feature.
+    const map: Record<string, string[]> = {}
+    ;(profileRows || []).forEach((p: any) => {
+      if (p.location_id) map[p.id] = [p.location_id]
+    })
+    ;(linkRows || []).forEach((row: any) => {
+      map[row.profile_id] = map[row.profile_id] || []
+      if (!map[row.profile_id].includes(row.location_id)) map[row.profile_id].push(row.location_id)
+    })
+    setLocationsByProfile(map)
+
     setLoading(false)
   }
 
   useEffect(() => {
     load()
   }, [])
-
-  const locationName = useMemo(() => {
-    const map = new Map(locations.map((l) => [l.id, l.name]))
-    return (id: string | null) => (id ? map.get(id) || '-' : '-')
-  }, [locations])
 
   const filtered = profiles.filter((p) => {
     const nameMatch = `${p.first_name} ${p.last_name} ${p.email || ''}`.toLowerCase().includes(search.toLowerCase())
@@ -149,14 +237,14 @@ export default function UsersPanel({ selfId }: { selfId: string }) {
         </div>
       )}
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+      <div className="rounded-xl border border-slate-800 bg-slate-900 overflow-visible">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-950/60 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
                 <th className="py-3 px-5">Name</th>
                 <th className="py-3 px-4">Email</th>
-                <th className="py-3 px-4">Location</th>
+                <th className="py-3 px-4">Location(s)</th>
                 <th className="py-3 px-4">Role</th>
                 <th className="py-3 px-4">Actions</th>
               </tr>
@@ -179,7 +267,16 @@ export default function UsersPanel({ selfId }: { selfId: string }) {
                       )}
                     </td>
                     <td className="py-3 px-4 text-slate-400 text-xs">{p.email || '-'}</td>
-                    <td className="py-3 px-4 text-slate-400 text-xs">{locationName(p.location_id)}</td>
+                    <td className="py-3 px-4">
+                      <LocationCell
+                        profileId={p.id}
+                        selectedIds={locationsByProfile[p.id] || []}
+                        allLocations={locations}
+                        isOpen={openLocationRowId === p.id}
+                        onToggleOpen={() => setOpenLocationRowId((cur) => (cur === p.id ? null : p.id))}
+                        onSaved={(ids) => setLocationsByProfile((prev) => ({ ...prev, [p.id]: ids }))}
+                      />
+                    </td>
                     <td className="py-3 px-4">
                       <select
                         value={p.role}

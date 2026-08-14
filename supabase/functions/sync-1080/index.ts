@@ -73,12 +73,14 @@ Deno.serve(async (req) => {
     let mode = "enqueue"
     let lookbackDays = 14
     let batchSize = 15
+    let triggeredBy: 'auto' | 'manual' = 'auto'
 
     try {
       const body = await req.json()
       if (body?.mode) mode = body.mode
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (typeof body?.batchSize === 'number') batchSize = body.batchSize
+      if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
     } catch (_) {
       // Body empty or not JSON
     }
@@ -325,7 +327,7 @@ Deno.serve(async (req) => {
 
       if (metricsWrittenCount > 0) {
         await supabase.from('import_status').upsert(
-          { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: 'auto', records_count: metricsWrittenCount },
+          { source: '1080', last_imported_at: new Date().toISOString(), triggered_by: triggeredBy, records_count: metricsWrittenCount },
           { onConflict: 'source, triggered_by' }
         )
       }

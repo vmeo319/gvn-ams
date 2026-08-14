@@ -8,7 +8,6 @@ import { ArrowLeft, UserPlus, ShieldCheck } from 'lucide-react'
 import UsersPanel from './UsersPanel'
 import CreateCoachPanel from './CreateCoachPanel'
 import LocationsPanel from './LocationsPanel'
-import SyncPanel from './SyncPanel'
 
 export default function AdminPage() {
   const router = useRouter()
@@ -50,7 +49,7 @@ export default function AdminPage() {
                 <ShieldCheck className="w-5 h-5 text-red-500" />
                 <h1 className="text-3xl font-extrabold text-white tracking-tight">Admin</h1>
               </div>
-              <p className="text-sm text-slate-400">Accounts, roles, locations, and data sync</p>
+              <p className="text-sm text-slate-400">Accounts, roles, and locations</p>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -80,8 +79,6 @@ export default function AdminPage() {
           <CreateCoachPanel onCreated={() => setUsersKey((k) => k + 1)} />
           <LocationsPanel />
         </div>
-
-        <SyncPanel />
       </div>
     </div>
   )

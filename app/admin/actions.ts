@@ -157,25 +157,29 @@ export async function deleteLocationAction(data: { id: string }) {
   }
 }
 
-// Manually invokes the same edge functions the nightly cron jobs call, using the same
-// service-role bearer auth (supabase/migrations/20260805030000_fix_cron_jobs.sql) — lets
-// an admin force a sync without waiting for the schedule.
-export async function triggerManualSyncAction(data: { source: 'sync-hawkins' | 'sync-1080' }) {
+// Replaces the full set of extra locations an athlete trains at, and keeps
+// profiles.location_id (their primary location — still what dashboard filtering, the
+// leaderboard view, and report cards read) in sync as the first one selected, so existing
+// single-location features keep showing something sensible without needing their own changes.
+export async function updateProfileLocationsAction(data: { profileId: string; locationIds: string[] }) {
   try {
-    const body = data.source === 'sync-1080' ? { mode: 'enqueue', lookbackDays: 14 } : {}
-    const res = await fetch(`${supabaseUrl}/functions/v1/${data.source}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${serviceRoleKey}`,
-      },
-      body: JSON.stringify(body),
-    })
-    const json = await res.json().catch(() => null)
-    if (!res.ok) {
-      return { success: false, error: formatError(json?.error || `HTTP ${res.status}`) }
+    const { error: deleteErr } = await supabaseAdmin.from('athlete_locations').delete().eq('profile_id', data.profileId)
+    if (deleteErr) return { success: false, error: formatError(deleteErr) }
+
+    if (data.locationIds.length > 0) {
+      const { error: insertErr } = await supabaseAdmin
+        .from('athlete_locations')
+        .insert(data.locationIds.map((locationId) => ({ profile_id: data.profileId, location_id: locationId })))
+      if (insertErr) return { success: false, error: formatError(insertErr) }
     }
-    return { success: true, result: json }
+
+    const { error: profileErr } = await supabaseAdmin
+      .from('profiles')
+      .update({ location_id: data.locationIds[0] ?? null })
+      .eq('id', data.profileId)
+    if (profileErr) return { success: false, error: formatError(profileErr) }
+
+    return { success: true }
   } catch (err: any) {
     return { success: false, error: formatError(err) }
   }
