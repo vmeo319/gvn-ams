@@ -81,14 +81,48 @@ export async function publishWorkout(data: { workoutId: string }) {
   return { success: true }
 }
 
+// Powers the two-step confirmation on the delete modal — a coach needs to see exactly what
+// they're about to lose before typing the workout's name to confirm.
+export async function getWorkoutDeletionImpact(data: { workoutId: string }) {
+  const { count: assignedCount } = await supabaseAdmin
+    .from('athlete_workout_assignments')
+    .select('athlete_id', { count: 'exact', head: true })
+    .eq('workout_id', data.workoutId)
+
+  const { data: historyRows } = await supabaseAdmin
+    .from('athlete_workout_history')
+    .select('athlete_id')
+    .eq('workout_id', data.workoutId)
+  const historicalAthleteCount = new Set((historyRows || []).map((r) => r.athlete_id)).size
+
+  return { success: true, assignedCount: assignedCount || 0, historicalAthleteCount }
+}
+
+// Any status can be deleted now (not just drafts) — athlete_workout_assignments/history
+// reference workout_id without ON DELETE CASCADE on purpose, so a workout still in use
+// would otherwise fail to delete with a raw FK error. Since the whole workout is going
+// away, both current assignments and historical stint records for it go too — the delete
+// modal warns about exactly this before letting a coach get here.
 export async function deleteWorkout(data: { workoutId: string }) {
-  const { data: workout } = await supabaseAdmin.from('workouts').select('status').eq('id', data.workoutId).single()
-  if (workout?.status !== 'draft') {
-    return { success: false, error: 'Only draft workouts can be deleted.' }
+  try {
+    const { error: assignErr } = await supabaseAdmin
+      .from('athlete_workout_assignments')
+      .delete()
+      .eq('workout_id', data.workoutId)
+    if (assignErr) return { success: false, error: formatError(assignErr) }
+
+    const { error: historyErr } = await supabaseAdmin
+      .from('athlete_workout_history')
+      .delete()
+      .eq('workout_id', data.workoutId)
+    if (historyErr) return { success: false, error: formatError(historyErr) }
+
+    const { error } = await supabaseAdmin.from('workouts').delete().eq('id', data.workoutId)
+    if (error) return { success: false, error: formatError(error) }
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
   }
-  const { error } = await supabaseAdmin.from('workouts').delete().eq('id', data.workoutId)
-  if (error) return { success: false, error: formatError(error) }
-  return { success: true }
 }
 
 export async function addWeek(data: { workoutId: string }) {

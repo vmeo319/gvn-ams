@@ -5,10 +5,11 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
-import { createWorkout, deleteWorkout } from './actions'
+import { createWorkout } from './actions'
 import { useWorkoutLocation } from '@/lib/useWorkoutLocation'
 import LocationPicker from './LocationPicker'
 import ExerciseBankTab from './ExerciseBankTab'
+import DeleteWorkoutModal from './DeleteWorkoutModal'
 
 interface WorkoutRow {
   id: string
@@ -28,6 +29,7 @@ export default function WorkoutsListPage() {
   const [creating, setCreating] = useState(false)
   const [tab, setTab] = useState<'workouts' | 'bank'>('workouts')
   const { locations, locationId, setLocationId } = useWorkoutLocation()
+  const [deleteTarget, setDeleteTarget] = useState<WorkoutRow | null>(null)
 
   async function loadWorkouts() {
     const { data } = await supabase
@@ -65,13 +67,6 @@ export default function WorkoutsListPage() {
     if (res.success && res.workoutId) {
       router.push(`/coach/workouts/${res.workoutId}`)
     }
-  }
-
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this draft workout? This cannot be undone.')) return
-    const res = await deleteWorkout({ workoutId: id })
-    if (res.success) await loadWorkouts()
-    else alert(res.error)
   }
 
   const filtered = workouts
@@ -170,18 +165,28 @@ export default function WorkoutsListPage() {
                     {w.status}
                   </span>
                 </Link>
-                {w.status === 'draft' && (
-                  <button
-                    onClick={() => handleDelete(w.id)}
-                    className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+                <button
+                  onClick={() => setDeleteTarget(w)}
+                  title="Delete workout"
+                  className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             ))}
           </div>
         </>
+      )}
+
+      {deleteTarget && (
+        <DeleteWorkoutModal
+          workout={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => {
+            setDeleteTarget(null)
+            loadWorkouts()
+          }}
+        />
       )}
     </div>
   )
