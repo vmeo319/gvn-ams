@@ -6,9 +6,11 @@ import { searchExerciseLibrary, createLibraryExercise } from './actions'
 export default function ExerciseCombobox({
   value,
   onCommit,
+  locationId,
 }: {
   value: string
   onCommit: (name: string) => void
+  locationId: string | null
 }) {
   const [text, setText] = useState(value)
   const [results, setResults] = useState<{ id: string; name: string }[]>([])
@@ -18,13 +20,13 @@ export default function ExerciseCombobox({
   useEffect(() => setText(value), [value])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !locationId) return
     const handle = setTimeout(async () => {
-      const res = await searchExerciseLibrary(text)
+      const res = await searchExerciseLibrary(text, locationId)
       if (res.success) setResults(res.results)
     }, 200)
     return () => clearTimeout(handle)
-  }, [text, open])
+  }, [text, open, locationId])
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -42,7 +44,7 @@ export default function ExerciseCombobox({
     setOpen(false)
     if (!clean) return
     if (clean !== value) {
-      await createLibraryExercise({ name: clean })
+      if (locationId) await createLibraryExercise({ name: clean, locationId })
       onCommit(clean)
     }
   }

@@ -271,10 +271,13 @@ export async function moveExercise(data: { dayId: string; id: string; direction:
   return { success: true }
 }
 
-export async function searchExerciseLibrary(query: string) {
+// Scoped per location — North Shore and Chicago (etc.) can use different naming
+// conventions for the same movement without polluting each other's autocomplete.
+export async function searchExerciseLibrary(query: string, locationId: string) {
   const { data, error } = await supabaseAdmin
     .from('exercise_library')
     .select('id, name')
+    .eq('location_id', locationId)
     .ilike('name', `%${query}%`)
     .order('name', { ascending: true })
     .limit(20)
@@ -282,16 +285,63 @@ export async function searchExerciseLibrary(query: string) {
   return { success: true, results: data || [] }
 }
 
-export async function createLibraryExercise(data: { name: string }) {
+// Select-then-insert rather than upsert(onConflict) — the unique index is on the
+// generated name_key column, and this sidesteps needing that to line up exactly with
+// PostgREST's onConflict target syntax. A genuine race (two coaches adding the same
+// exercise at once) just re-selects the winner's row instead of erroring.
+export async function createLibraryExercise(data: { name: string; locationId: string }) {
   const name = data.name.trim()
   if (!name) return { success: false, error: 'Name cannot be blank.' }
+
+  const { data: existing } = await supabaseAdmin
+    .from('exercise_library')
+    .select('id, name')
+    .eq('location_id', data.locationId)
+    .ilike('name', name)
+    .maybeSingle()
+  if (existing) return { success: true, exercise: existing }
+
   const { data: inserted, error } = await supabaseAdmin
     .from('exercise_library')
-    .upsert({ name }, { onConflict: 'name', ignoreDuplicates: false })
+    .insert({ name, location_id: data.locationId })
     .select('id, name')
     .single()
-  if (error || !inserted) return { success: false, error: formatError(error) }
+  if (error) {
+    const { data: raceWinner } = await supabaseAdmin
+      .from('exercise_library')
+      .select('id, name')
+      .eq('location_id', data.locationId)
+      .ilike('name', name)
+      .maybeSingle()
+    if (raceWinner) return { success: true, exercise: raceWinner }
+    return { success: false, error: formatError(error) }
+  }
   return { success: true, exercise: inserted }
+}
+
+// Full alphabetical list for the Exercise Bank tab.
+export async function listExerciseLibrary(locationId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('exercise_library')
+    .select('id, name')
+    .eq('location_id', locationId)
+    .order('name', { ascending: true })
+  if (error) return { success: false, error: formatError(error), results: [] }
+  return { success: true, results: data || [] }
+}
+
+// "Which programs is this found in" — matched by name text against workout_exercise_usage
+// (a view joining workout_exercises -> workout_days -> workout_weeks -> workouts), since
+// workout_exercises.exercise_name has no FK to exercise_library to join on directly.
+export async function getExerciseUsage(name: string) {
+  const nameKey = name.trim().toLowerCase()
+  if (!nameKey) return { success: true, results: [] }
+  const { data, error } = await supabaseAdmin
+    .from('workout_exercise_usage')
+    .select('workout_id, workout_name, workout_status')
+    .eq('exercise_name_key', nameKey)
+  if (error) return { success: false, error: formatError(error), results: [] }
+  return { success: true, results: data || [] }
 }
 
 export async function searchActiveWorkouts(query: string) {

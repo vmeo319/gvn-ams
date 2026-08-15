@@ -6,6 +6,8 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Plus, Trash2, Copy, ChevronUp, ChevronDown, Check } from 'lucide-react'
 import ExerciseCombobox from '../ExerciseCombobox'
+import LocationPicker from '../LocationPicker'
+import { useWorkoutLocation } from '@/lib/useWorkoutLocation'
 import {
   addWeek,
   removeWeek,
@@ -60,6 +62,7 @@ export default function WorkoutBuilderPage() {
   const [loading, setLoading] = useState(true)
   const [exercisesLoading, setExercisesLoading] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
+  const { locations, locationId, setLocationId } = useWorkoutLocation()
 
   async function loadWorkoutAndWeeks() {
     const { data: w } = await supabase.from('workouts').select('id, name, status').eq('id', workoutId).single()
@@ -287,6 +290,7 @@ export default function WorkoutBuilderPage() {
           </span>
         </div>
         <div className="flex items-center gap-3">
+          <LocationPicker locations={locations} locationId={locationId} onChange={setLocationId} />
           {workout?.status === 'draft' && (
             <button
               onClick={handlePublish}
@@ -398,6 +402,7 @@ export default function WorkoutBuilderPage() {
                         <div className="col-span-3">
                           <ExerciseCombobox
                             value={row.exercise_name}
+                            locationId={locationId}
                             onCommit={(name) => {
                               updateLocalExercise(row.id, { exercise_name: name })
                               commitExercise({ ...row, exercise_name: name })

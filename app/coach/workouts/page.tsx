@@ -6,6 +6,9 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
 import { createWorkout, deleteWorkout } from './actions'
+import { useWorkoutLocation } from '@/lib/useWorkoutLocation'
+import LocationPicker from './LocationPicker'
+import ExerciseBankTab from './ExerciseBankTab'
 
 interface WorkoutRow {
   id: string
@@ -23,6 +26,8 @@ export default function WorkoutsListPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'active'>('all')
   const [creating, setCreating] = useState(false)
+  const [tab, setTab] = useState<'workouts' | 'bank'>('workouts')
+  const { locations, locationId, setLocationId } = useWorkoutLocation()
 
   async function loadWorkouts() {
     const { data } = await supabase
@@ -82,14 +87,16 @@ export default function WorkoutsListPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight uppercase">Workouts</h1>
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleCreate}
-            disabled={creating}
-            className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded-lg transition text-sm disabled:opacity-50"
-          >
-            <Plus className="w-4 h-4" />
-            <span>{creating ? 'Creating...' : 'New Workout'}</span>
-          </button>
+          {tab === 'workouts' && (
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2 rounded-lg transition text-sm disabled:opacity-50"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{creating ? 'Creating...' : 'New Workout'}</span>
+            </button>
+          )}
           <Link
             href="/coach"
             className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"
@@ -100,57 +107,82 @@ export default function WorkoutsListPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <input
-          type="text"
-          placeholder="Search workouts..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"
-        />
-        {(['all', 'active', 'draft'] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`px-4 py-2.5 rounded-lg text-sm font-semibold border transition capitalize ${
-              statusFilter === s ? 'border-red-500 bg-red-950/20 text-white' : 'border-slate-800 bg-slate-900 text-slate-400'
-            }`}
-          >
-            {s}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div className="flex items-center gap-2">
+          {(['workouts', 'bank'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                tab === t ? 'bg-red-950/30 text-white border border-red-500' : 'text-slate-400 hover:text-white border border-transparent'
+              }`}
+            >
+              {t === 'workouts' ? 'Workouts' : 'Exercise Bank'}
+            </button>
+          ))}
+        </div>
+        {tab === 'bank' && (
+          <LocationPicker locations={locations} locationId={locationId} onChange={setLocationId} />
+        )}
       </div>
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900 divide-y divide-slate-800">
-        {loading && <div className="p-6 text-center text-slate-400">Loading workouts...</div>}
-        {!loading && filtered.length === 0 && (
-          <div className="p-6 text-center text-slate-400">No workouts found.</div>
-        )}
-        {filtered.map((w) => (
-          <div key={w.id} className="flex items-center justify-between px-5 py-4 hover:bg-slate-800/40 transition">
-            <Link href={`/coach/workouts/${w.id}`} className="flex-1 flex items-center gap-3">
-              <span className="font-semibold text-white">{w.name}</span>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase ${
-                  w.status === 'active'
-                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+      {tab === 'bank' ? (
+        <ExerciseBankTab locationId={locationId} />
+      ) : (
+        <>
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              placeholder="Search workouts..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"
+            />
+            {(['all', 'active', 'draft'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-4 py-2.5 rounded-lg text-sm font-semibold border transition capitalize ${
+                  statusFilter === s ? 'border-red-500 bg-red-950/20 text-white' : 'border-slate-800 bg-slate-900 text-slate-400'
                 }`}
               >
-                {w.status}
-              </span>
-            </Link>
-            {w.status === 'draft' && (
-              <button
-                onClick={() => handleDelete(w.id)}
-                className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
-              >
-                <Trash2 className="w-4 h-4" />
+                {s}
               </button>
-            )}
+            ))}
           </div>
-        ))}
-      </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 divide-y divide-slate-800">
+            {loading && <div className="p-6 text-center text-slate-400">Loading workouts...</div>}
+            {!loading && filtered.length === 0 && (
+              <div className="p-6 text-center text-slate-400">No workouts found.</div>
+            )}
+            {filtered.map((w) => (
+              <div key={w.id} className="flex items-center justify-between px-5 py-4 hover:bg-slate-800/40 transition">
+                <Link href={`/coach/workouts/${w.id}`} className="flex-1 flex items-center gap-3">
+                  <span className="font-semibold text-white">{w.name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase ${
+                      w.status === 'active'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-slate-800 text-slate-400 border border-slate-700'
+                    }`}
+                  >
+                    {w.status}
+                  </span>
+                </Link>
+                {w.status === 'draft' && (
+                  <button
+                    onClick={() => handleDelete(w.id)}
+                    className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
