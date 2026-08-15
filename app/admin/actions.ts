@@ -22,11 +22,16 @@ const formatError = (err: any) => {
   return 'Something went wrong.'
 }
 
+// The `host` header seen by a Server Action isn't reliably the public-facing domain on
+// Vercel (confirmed broken — an admin-generated reset link came out pointing at
+// localhost:3000 in production). There's exactly one real deployment for this app, so
+// hardcoding it removes the whole class of bug instead of trying to detect it correctly;
+// the localhost carve-out is what keeps local dev links working during testing.
 async function getAppOrigin(): Promise<string> {
   const hdrs = await headers()
   const host = hdrs.get('host') || 'localhost:3000'
-  const protocol = host.startsWith('localhost') ? 'http' : 'https'
-  return `${protocol}://${host}`
+  if (host.startsWith('localhost')) return `http://${host}`
+  return 'https://gvn-ams.vercel.app'
 }
 
 // Brand-new coach login, created straight from an invite — same generateLink + profile
