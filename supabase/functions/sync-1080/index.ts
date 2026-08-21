@@ -85,14 +85,16 @@ Deno.serve(async (req) => {
     let lookbackDays = 14
     let batchSize = 15
     let triggeredBy: 'auto' | 'manual' = 'auto'
-    // ten80_sync_queue.id is a UUID, not sequential — created_at is the real resumable
-    // ordering for the recheck_top_speed scan below.
-    let afterCreatedAt = '1970-01-01T00:00:00.000Z'
+    let offset = 0
+    let body_athleteId = ''
+    let body_testDate = ''
 
     try {
       const body = await req.json()
       if (body?.mode) mode = body.mode
-      if (typeof body?.afterCreatedAt === 'string') afterCreatedAt = body.afterCreatedAt
+      if (typeof body?.offset === 'number') offset = body.offset
+      if (typeof body?.athleteId === 'string') body_athleteId = body.athleteId
+      if (typeof body?.testDate === 'string') body_testDate = body.testDate
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (typeof body?.batchSize === 'number') batchSize = body.batchSize
       if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
@@ -212,23 +214,77 @@ Deno.serve(async (req) => {
       )
     }
 
+    // Diagnostic — dumps every 10yd Off-Ice Sprint motion (distance + speed) for one
+    // athlete on one date, straight from the live API. Not wired into any cron; useful for
+    // spot-checking a specific reported-bad reading.
+    if (mode === "inspect_athlete_date") {
+      const athleteId = body_athleteId
+      const testDate = body_testDate
+
+      const { data: rows } = await supabase
+        .from('ten80_sync_queue')
+        .select('session_id')
+        .eq('athlete_id', athleteId)
+        .eq('status', 'completed')
+
+      const found: any[] = []
+      for (const row of rows || []) {
+        const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
+        if (!sessRes.ok) continue
+        const sessionDetail = await sessRes.json()
+        const sessDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : null
+        if (sessDate !== testDate) continue
+
+        for (const ex of sessionDetail?.exercises || []) {
+          const exName = ex?.exerciseTypeName || ex?.name || ""
+          if (!isTenYardOffIceSprint(exName)) continue
+          for (const setRef of ex?.sets || []) {
+            if (!setRef?.id) continue
+            const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=false`, { headers: ten80Headers })
+            if (!setRes.ok) continue
+            const setData = await setRes.json()
+            for (const mg of setData?.motionGroups || []) {
+              for (const motion of mg?.motions || []) {
+                found.push({
+                  sessionId: row.session_id,
+                  setId: setRef.id,
+                  concentricLoad: motion?.resistanceValues?.concentricLoad,
+                  topSpeed: motion?.topSpeed,
+                  peakSpeed: motion?.peakValues?.speed,
+                  totalDistance: motion?.totalDistance,
+                  totalTime: motion?.totalTime,
+                })
+              }
+            }
+          }
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, athleteId, testDate, sessionsForAthlete: (rows || []).length, motions: found }, null, 1),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
     // ==========================================
     // MODE: RECHECK_TOP_SPEED — one-time retroactive scan (see the migration comment on
     // ten80_recheck_staging for why this can't just re-run process_batch's normal upsert).
-    // Resumable via afterCreatedAt; processes every ten80_sync_queue row once, oldest
-    // first, accumulating the best genuinely-10-yard top speed per (athlete, date) into
-    // staging — GREATEST-merged so it's correct regardless of which batch sees which
-    // session first. Call repeatedly (feeding back the returned lastCreatedAt as the next
-    // afterCreatedAt) until remaining === 0, then call apply_top_speed_recheck once.
+    // Resumable via a plain row offset over a fully deterministic order (created_at, then
+    // id as a tiebreaker) — a first version of this cursored on created_at alone, and a
+    // batch of 54 rows all sharing one bulk-insert timestamp meant whichever of them didn't
+    // land in that page's LIMIT got silently skipped forever, since the next page's `.gt()`
+    // excluded ties. OFFSET+LIMIT over a fully-ordered set can't drop rows that way. Call
+    // repeatedly (feeding back offset + rows returned as the next offset) until remaining
+    // === 0, then call apply_top_speed_recheck once.
     // ==========================================
     if (mode === "recheck_top_speed") {
       const { data: rows, error: qErr } = await supabase
         .from('ten80_sync_queue')
         .select('id, session_id, athlete_id, created_at')
         .eq('status', 'completed')
-        .gt('created_at', afterCreatedAt)
         .order('created_at', { ascending: true })
-        .limit(batchSize)
+        .order('id', { ascending: true })
+        .range(offset, offset + batchSize - 1)
 
       if (qErr) {
         return new Response(
@@ -239,12 +295,10 @@ Deno.serve(async (req) => {
 
       // (athlete_id, test_date) -> best valid top speed (mph) seen in THIS batch
       const bestThisBatch = new Map<string, { athleteId: string; testDate: string; mph: number }>()
-      let lastCreatedAt = afterCreatedAt
       let sessionsChecked = 0
       let tenYardSetsChecked = 0
 
       for (const row of rows || []) {
-        lastCreatedAt = row.created_at
         sessionsChecked++
         const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
         if (!sessRes.ok) continue
@@ -306,11 +360,12 @@ Deno.serve(async (req) => {
         if (!upsertErr) staged++
       }
 
-      const { count: remaining } = await supabase
+      const { count: totalCompleted } = await supabase
         .from('ten80_sync_queue')
         .select('id', { count: 'exact', head: true })
         .eq('status', 'completed')
-        .gt('created_at', lastCreatedAt)
+
+      const nextOffset = offset + sessionsChecked
 
       return new Response(
         JSON.stringify({
@@ -318,8 +373,8 @@ Deno.serve(async (req) => {
           sessionsChecked,
           tenYardSetsChecked,
           keysStagedThisBatch: staged,
-          lastCreatedAt,
-          remaining: remaining || 0,
+          nextOffset,
+          remaining: Math.max((totalCompleted || 0) - nextOffset, 0),
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
