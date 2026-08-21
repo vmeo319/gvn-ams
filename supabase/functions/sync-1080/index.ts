@@ -18,12 +18,23 @@ const corsHeaders = {
 //                                                (externalLoad always 0) — NOT the real per-rep data
 //   GET /TrainingData/Set/{setId}?includeSamples=false
 //                                             -> PublicSetData { motionGroups[].motions[] }, each
-//                                                motion has resistanceValues.concentricLoad (kg)
-//                                                and topSpeed / peakValues.speed (m/s)
+//                                                motion has resistanceValues.concentricLoad (kg),
+//                                                topSpeed / peakValues.speed (m/s), and
+//                                                totalDistance (m) — confirmed via a real
+//                                                "10yd Off-Ice Sprint" motion: totalDistance
+//                                                9.144, which is exactly 10 yards.
 const API_BASE = "https://publicapi.1080motion.com"
 
 const MPS_TO_MPH = 2.23694
 const LOAD_TOLERANCE_KG = 0.5 // "2kg" sprints in practice land at 1.5-2.5
+
+// Coaches sometimes run a 15-yard sprint under the same "10yd Off-Ice Sprint" exercise
+// template — the label is wrong but the distance actually covered is real (13.716m, not
+// 9.144m), which inflates top_speed since the athlete keeps accelerating over the extra 5
+// yards. totalDistance is the ground truth regardless of what the exercise is labeled;
+// anything not within tolerance of a genuine 10-yard rep is excluded rather than trusted.
+const TEN_YARD_METERS = 9.144
+const DISTANCE_TOLERANCE_M = 0.6 // a real 15yd rep (13.716m) misses this by ~4.6m — nowhere close
 
 // First-name variants that should be treated as the same person (last name must still
 // match exactly). 1080 and the roster don't always agree on which form gets used.
@@ -74,10 +85,14 @@ Deno.serve(async (req) => {
     let lookbackDays = 14
     let batchSize = 15
     let triggeredBy: 'auto' | 'manual' = 'auto'
+    // ten80_sync_queue.id is a UUID, not sequential — created_at is the real resumable
+    // ordering for the recheck_top_speed scan below.
+    let afterCreatedAt = '1970-01-01T00:00:00.000Z'
 
     try {
       const body = await req.json()
       if (body?.mode) mode = body.mode
+      if (typeof body?.afterCreatedAt === 'string') afterCreatedAt = body.afterCreatedAt
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (typeof body?.batchSize === 'number') batchSize = body.batchSize
       if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
@@ -198,6 +213,159 @@ Deno.serve(async (req) => {
     }
 
     // ==========================================
+    // MODE: RECHECK_TOP_SPEED — one-time retroactive scan (see the migration comment on
+    // ten80_recheck_staging for why this can't just re-run process_batch's normal upsert).
+    // Resumable via afterCreatedAt; processes every ten80_sync_queue row once, oldest
+    // first, accumulating the best genuinely-10-yard top speed per (athlete, date) into
+    // staging — GREATEST-merged so it's correct regardless of which batch sees which
+    // session first. Call repeatedly (feeding back the returned lastCreatedAt as the next
+    // afterCreatedAt) until remaining === 0, then call apply_top_speed_recheck once.
+    // ==========================================
+    if (mode === "recheck_top_speed") {
+      const { data: rows, error: qErr } = await supabase
+        .from('ten80_sync_queue')
+        .select('id, session_id, athlete_id, created_at')
+        .eq('status', 'completed')
+        .gt('created_at', afterCreatedAt)
+        .order('created_at', { ascending: true })
+        .limit(batchSize)
+
+      if (qErr) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Queue query failed: ${qErr.message}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+
+      // (athlete_id, test_date) -> best valid top speed (mph) seen in THIS batch
+      const bestThisBatch = new Map<string, { athleteId: string; testDate: string; mph: number }>()
+      let lastCreatedAt = afterCreatedAt
+      let sessionsChecked = 0
+      let tenYardSetsChecked = 0
+
+      for (const row of rows || []) {
+        lastCreatedAt = row.created_at
+        sessionsChecked++
+        const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
+        if (!sessRes.ok) continue
+        const sessionDetail = await sessRes.json()
+        const testDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : null
+        if (!testDate) continue
+
+        for (const ex of sessionDetail?.exercises || []) {
+          const exName = ex?.exerciseTypeName || ex?.name || ""
+          if (!isTenYardOffIceSprint(exName)) continue
+
+          for (const setRef of ex?.sets || []) {
+            if (!setRef?.id) continue
+            tenYardSetsChecked++
+            const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=false`, { headers: ten80Headers })
+            if (!setRes.ok) continue
+            const setData = await setRes.json()
+
+            const key = `${row.athlete_id}_${testDate}`
+            if (!bestThisBatch.has(key)) bestThisBatch.set(key, { athleteId: row.athlete_id, testDate, mph: 0 })
+
+            for (const mg of setData?.motionGroups || []) {
+              for (const motion of mg?.motions || []) {
+                const loadKg = Number(motion?.resistanceValues?.concentricLoad)
+                const speedMps = Number(motion?.topSpeed ?? motion?.peakValues?.speed)
+                const totalDistance = Number(motion?.totalDistance)
+                if (isNaN(speedMps) || speedMps <= 0) continue
+                if (isNaN(loadKg) || Math.abs(loadKg - 2) > LOAD_TOLERANCE_KG) continue
+                if (isNaN(totalDistance) || Math.abs(totalDistance - TEN_YARD_METERS) > DISTANCE_TOLERANCE_M) continue
+
+                const mph = Number((speedMps * MPS_TO_MPH).toFixed(2))
+                const entry = bestThisBatch.get(key)!
+                if (mph > entry.mph) entry.mph = mph
+              }
+            }
+          }
+        }
+      }
+
+      // GREATEST-merge into staging — a key with no valid rep this batch still gets
+      // recorded (mph left at 0, stored as null) so the apply step knows this date WAS
+      // touched by a 10yd exercise and should be corrected, not just left alone.
+      let staged = 0
+      for (const entry of bestThisBatch.values()) {
+        const { data: existing } = await supabase
+          .from('ten80_recheck_staging')
+          .select('best_top_speed_mph')
+          .eq('athlete_id', entry.athleteId)
+          .eq('test_date', entry.testDate)
+          .maybeSingle()
+
+        const merged = Math.max(entry.mph, existing?.best_top_speed_mph || 0)
+        const { error: upsertErr } = await supabase
+          .from('ten80_recheck_staging')
+          .upsert(
+            { athlete_id: entry.athleteId, test_date: entry.testDate, best_top_speed_mph: merged > 0 ? merged : null },
+            { onConflict: 'athlete_id, test_date' }
+          )
+        if (!upsertErr) staged++
+      }
+
+      const { count: remaining } = await supabase
+        .from('ten80_sync_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'completed')
+        .gt('created_at', lastCreatedAt)
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          sessionsChecked,
+          tenYardSetsChecked,
+          keysStagedThisBatch: staged,
+          lastCreatedAt,
+          remaining: remaining || 0,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // ==========================================
+    // MODE: APPLY_TOP_SPEED_RECHECK — run once, after recheck_top_speed has scanned the
+    // entire queue (remaining === 0). Overwrites performance_metrics.top_speed for every
+    // (athlete, date) the scan touched — including explicitly nulling it out where every
+    // rep that date turned out to be a mislabeled non-10-yard sprint.
+    // ==========================================
+    if (mode === "apply_top_speed_recheck") {
+      const { data: stagingRows, error: stagingErr } = await supabase
+        .from('ten80_recheck_staging')
+        .select('athlete_id, test_date, best_top_speed_mph')
+      if (stagingErr) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Staging query failed: ${stagingErr.message}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+
+      let updated = 0
+      let nulledOut = 0
+      const errors: string[] = []
+      for (const row of stagingRows || []) {
+        const { error } = await supabase
+          .from('performance_metrics')
+          .update({ top_speed: row.best_top_speed_mph })
+          .eq('athlete_id', row.athlete_id)
+          .eq('test_date', row.test_date)
+        if (error) {
+          errors.push(`${row.athlete_id} ${row.test_date}: ${error.message}`)
+        } else {
+          updated++
+          if (row.best_top_speed_mph === null) nulledOut++
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, updated, nulledOut, errors: errors.slice(0, 10) }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // ==========================================
     // MODE: PROCESS_BATCH — pull a batch of queued sessions and write real metrics
     // ==========================================
     if (mode === "process_one" || mode === "process_batch") {
@@ -263,7 +431,9 @@ Deno.serve(async (req) => {
                     v0RepPoints.push({ loadKg, speedMps })
                   }
                   if (wantsTopSpeed && !isNaN(loadKg) && Math.abs(loadKg - 2) <= LOAD_TOLERANCE_KG) {
-                    if (speedMps > topSpeed2kgMps) topSpeed2kgMps = speedMps
+                    const totalDistance = Number(motion?.totalDistance)
+                    const isGenuineTenYards = !isNaN(totalDistance) && Math.abs(totalDistance - TEN_YARD_METERS) <= DISTANCE_TOLERANCE_M
+                    if (isGenuineTenYards && speedMps > topSpeed2kgMps) topSpeed2kgMps = speedMps
                   }
                 }
               }
