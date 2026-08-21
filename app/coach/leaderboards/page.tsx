@@ -16,7 +16,7 @@ interface MetricOption {
 
 const METRICS: MetricOption[] = [
   { key: 'iso', column: 'iso_belt_squat_peak_force', label: 'Peak ISO Force', unit: 'N/kg', decimals: 1 },
-  { key: 'cmj', column: 'cmj_height_inches', label: 'Jump Height (CMJ)', unit: 'in', decimals: 1 },
+  { key: 'cmj', column: 'cmj_height_inches', label: 'Jump Height (CMJ)', unit: 'in', decimals: 2 },
   { key: 'v0', column: 'v0_speed', label: 'Sprint V0 Speed', unit: 'mph', decimals: 2 },
   { key: 'top_speed', column: 'top_speed', label: '10yd Top Speed', unit: 'mph', decimals: 2 },
   { key: 'broad_jump', column: 'broad_jump_inches', label: 'Broad Jump', unit: 'in', decimals: 1 },
