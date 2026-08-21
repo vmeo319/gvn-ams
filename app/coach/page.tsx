@@ -4,11 +4,13 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck, RefreshCw } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck, RefreshCw, Users } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV, triggerManualSyncAction } from './actions'
 import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
+import { listGroupsWithCounts, listAllAthleteGroups } from './groups/actions'
+import GroupCell, { GroupOption } from './groups/GroupCell'
 
 // These 3 coaches only work out of North Shore day-to-day, so default the dashboard's
 // location filter (and the levels columns, which North Shore actually uses) to that —
@@ -181,6 +183,11 @@ export default function CoachDashboard() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [syncRunning, setSyncRunning] = useState<'sync-hawkins' | 'sync-1080' | null>(null)
   const [syncResult, setSyncResult] = useState<{ source: string; success: boolean; msg: string } | null>(null)
+  const [groupOptions, setGroupOptions] = useState<GroupOption[]>([])
+  const [groupsByAthlete, setGroupsByAthlete] = useState<Record<string, string[]>>({})
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [groupDropdownOpen, setGroupDropdownOpen] = useState(false)
+  const [openGroupCellId, setOpenGroupCellId] = useState<string | null>(null)
 
   // Modal States
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -229,6 +236,7 @@ export default function CoachDashboard() {
     fetchImportStatus()
     fetchWorkouts()
     fetchPendingRequestCount()
+    fetchGroups()
 
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (user?.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase())) {
@@ -261,6 +269,23 @@ export default function CoachDashboard() {
   const fetchLocations = async () => {
     const { data: locs, error } = await supabase.from('locations').select('id, name').order('name')
     if (!error && locs) setLocationOptions(locs as LocationRow[])
+  }
+
+  const fetchGroups = async () => {
+    const [groupsRes, membershipRes] = await Promise.all([listGroupsWithCounts(), listAllAthleteGroups()])
+    if (groupsRes.success) setGroupOptions(groupsRes.results.map((g) => ({ id: g.id, name: g.name })))
+    if (membershipRes.success) {
+      const map: Record<string, string[]> = {}
+      for (const row of membershipRes.results as { athlete_id: string; group_id: string }[]) {
+        if (!map[row.athlete_id]) map[row.athlete_id] = []
+        map[row.athlete_id].push(row.group_id)
+      }
+      setGroupsByAthlete(map)
+    }
+  }
+
+  const toggleGroupSelect = (groupId: string) => {
+    setSelectedGroups((prev) => (prev.includes(groupId) ? prev.filter((g) => g !== groupId) : [...prev, groupId]))
   }
 
   const handleRunSync = async (source: 'sync-hawkins' | 'sync-1080', label: string) => {
@@ -767,7 +792,10 @@ export default function CoachDashboard() {
       const locationMatch =
         selectedLocations.length === 0 ||
         (a.location && selectedLocations.includes(a.location))
-      return nameMatch && locationMatch
+      const athleteGroupIds = groupsByAthlete[a.athlete_id] || []
+      const groupMatch =
+        selectedGroups.length === 0 || selectedGroups.some((g) => athleteGroupIds.includes(g))
+      return nameMatch && locationMatch && groupMatch
     })
     .sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''))
 
@@ -917,6 +945,14 @@ export default function CoachDashboard() {
             </Link>
 
             <Link
+              href="/coach/groups"
+              className="flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
+            >
+              <Users className="w-4 h-4 text-violet-400" />
+              <span>Groups</span>
+            </Link>
+
+            <Link
               href="/coach/signup-requests"
               className="relative flex items-center space-x-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold px-4 py-2.5 rounded-lg border border-slate-700 transition"
             >
@@ -1013,6 +1049,52 @@ export default function CoachDashboard() {
             )}
           </div>
 
+          <div className="relative">
+            <button
+              onClick={() => setGroupDropdownOpen(!groupDropdownOpen)}
+              className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 hover:border-slate-700 transition"
+            >
+              <Users className="w-4 h-4 text-violet-400" />
+              <span className="font-medium">
+                {selectedGroups.length === 0
+                  ? 'All Groups'
+                  : `${selectedGroups.length} Group(s) Selected`}
+              </span>
+            </button>
+
+            {groupDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-3 z-30 space-y-1">
+                <div className="text-xs font-semibold text-slate-400 px-2 py-1 uppercase tracking-wider">
+                  Filter by Group
+                </div>
+                {groupOptions.length === 0 && (
+                  <div className="px-2 py-2 text-xs text-slate-500">No groups yet.</div>
+                )}
+                {groupOptions.map((g) => {
+                  const isChecked = selectedGroups.includes(g.id)
+                  return (
+                    <button
+                      key={g.id}
+                      onClick={() => toggleGroupSelect(g.id)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
+                    >
+                      <span>{g.name}</span>
+                      {isChecked && <Check className="w-4 h-4 text-red-500" />}
+                    </button>
+                  )
+                })}
+                {selectedGroups.length > 0 && (
+                  <button
+                    onClick={() => setSelectedGroups([])}
+                    className="w-full mt-2 pt-2 border-t border-slate-800 text-center text-[11px] font-semibold text-red-400 hover:text-red-300 transition"
+                  >
+                    Clear Selected Filters
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             onClick={() => setShowLevels((v) => !v)}
             className={`flex items-center space-x-2 rounded-lg px-4 py-2 text-sm font-medium border transition ${
@@ -1032,6 +1114,7 @@ export default function CoachDashboard() {
               <thead>
                 <tr className="bg-slate-950/60 border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
                   <th className="py-4 px-6">Athlete</th>
+                  <th className="py-4 px-4">Groups</th>
                   <th className="py-4 px-4">Current Workout</th>
                   <th className="py-4 px-4">Pos</th>
                   <th className="py-4 px-4">Ht / Wt</th>
@@ -1046,13 +1129,13 @@ export default function CoachDashboard() {
               <tbody className="divide-y divide-slate-800/60 text-sm">
                 {loading ? (
                   <tr>
-                    <td colSpan={showLevels ? 10 : 8} className="py-12 text-center text-slate-500">
+                    <td colSpan={showLevels ? 11 : 9} className="py-12 text-center text-slate-500">
                       Loading GVN performance records...
                     </td>
                   </tr>
                 ) : filteredData.length === 0 ? (
                   <tr>
-                    <td colSpan={showLevels ? 10 : 8} className="py-12 text-center text-slate-500">
+                    <td colSpan={showLevels ? 11 : 9} className="py-12 text-center text-slate-500">
                       No matching athletes found.
                     </td>
                   </tr>
@@ -1083,6 +1166,17 @@ export default function CoachDashboard() {
                               {a.location}
                             </span>
                           )}
+                        </td>
+                        <td className="py-4 px-4">
+                          <GroupCell
+                            athleteId={a.athlete_id}
+                            selectedIds={groupsByAthlete[a.athlete_id] || []}
+                            allGroups={groupOptions}
+                            isOpen={openGroupCellId === a.athlete_id}
+                            onToggleOpen={() => setOpenGroupCellId((cur) => (cur === a.athlete_id ? null : a.athlete_id))}
+                            onSaved={(ids) => setGroupsByAthlete((prev) => ({ ...prev, [a.athlete_id]: ids }))}
+                            onGroupCreated={(g) => setGroupOptions((prev) => [...prev, g].sort((x, y) => x.name.localeCompare(y.name)))}
+                          />
                         </td>
                         <td className="py-4 px-4">
                           {currentWorkout ? (
