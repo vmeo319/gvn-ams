@@ -169,24 +169,23 @@ export default function AthleteReportCardPage() {
             pageIndex < pages.length - 1 ? 'print:break-after-page' : ''
           }`}
         >
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-6">
+          <div className="flex flex-col items-center text-center gap-4 border-b border-slate-800 pb-8">
             <div className="flex items-center gap-4">
-              <div className="relative w-16 h-16 shrink-0">
+              <div className="relative w-24 h-24 shrink-0">
                 <Image src="/gvn-logo-wolf.png" alt="GVN Wolf Logo" fill className="object-contain" />
               </div>
-              <div className="relative w-40 h-8">
+              <div className="relative w-64 h-12">
                 <Image src="/gvn-logo-letters.png" alt="GVN Performance" fill className="object-contain" />
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-500 uppercase tracking-wider">Athlete Report Card</div>
-              <div className="text-xs text-slate-600">Generated {generatedDate}</div>
+            <div>
+              <h1 className="text-4xl font-bold text-white uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
+              {location && <div className="text-sm text-slate-500 mt-1">{location}</div>}
             </div>
-          </div>
-
-          <div>
-            <h1 className="text-3xl font-bold text-white uppercase tracking-tight">{athleteName || 'Athlete'}</h1>
-            {location && <div className="text-sm text-slate-500 mt-1">{location}</div>}
+            <div>
+              <div className="text-xs text-slate-500 uppercase tracking-wider">Athlete Report Card</div>
+              <div className="text-xs text-slate-600 mt-0.5">Generated {generatedDate}</div>
+            </div>
           </div>
 
           {/* 1 chart gets a single centered panel; 2 or 4 form a clean side-by-side grid
