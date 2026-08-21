@@ -114,7 +114,10 @@ export default function AthleteReportCardPage() {
           .report-card-root {
             max-width: none !important;
             width: 100% !important;
-            padding: 0 !important;
+            /* Zeroing this out entirely (the previous fix) ran content flush against the
+               @page boundary — the athlete's name was visibly clipped at the left edge.
+               This is real breathing room on top of the @page margin, not a duplicate of it. */
+            padding: 0 0.35in !important;
             margin: 0 !important;
           }
         }
