@@ -11,6 +11,7 @@ import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
 import AthleteWorkoutPanel from '@/app/components/AthleteWorkoutPanel'
 import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
 import WeightEntryForm from '@/app/components/WeightEntryForm'
+import AttendancePanel from '@/app/components/AttendancePanel'
 import { createParentInviteAction } from '@/app/coach/actions'
 
 export default function CoachAthleteDetailPage() {
@@ -175,6 +176,8 @@ export default function CoachAthleteDetailPage() {
         <TrendBadge metricName={METRIC_INFO.cmj.name} metricColor={METRIC_INFO.cmj.color} points={pointsFor('cmj_height_inches')} />
         <TrendBadge metricName={METRIC_INFO.top_speed.name} metricColor={METRIC_INFO.top_speed.color} points={pointsFor('top_speed')} />
       </div>
+
+      <AttendancePanel athleteId={athleteId} />
 
       <WeightEntryForm athleteId={athleteId} onLogged={loadMetrics} />
 

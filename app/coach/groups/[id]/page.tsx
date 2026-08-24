@@ -5,7 +5,9 @@ import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
-import { getGroupDetail, getWeekAttendance, setAttendanceAction } from '../actions'
+import { getGroupDetail, getWeekAttendance, setAttendanceAction, getGroupMetrics } from '../actions'
+import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
+import TrendBadge from '@/app/components/TrendBadge'
 
 interface Member {
   id: string
@@ -49,6 +51,7 @@ export default function GroupDetailPage() {
   const [coachId, setCoachId] = useState<string | null>(null)
   const [groupName, setGroupName] = useState('')
   const [members, setMembers] = useState<Member[]>([])
+  const [groupMetrics, setGroupMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
   const [weekStart, setWeekStart] = useState<Date>(() => mondayOf(new Date()))
   const [attendance, setAttendance] = useState<Map<string, boolean>>(new Map())
@@ -64,6 +67,11 @@ export default function GroupDetailPage() {
       setGroupName(res.group!.name)
       setMembers(res.members as Member[])
     }
+  }
+
+  async function loadGroupMetrics() {
+    const res = await getGroupMetrics({ groupId })
+    if (res.success) setGroupMetrics(res.results as Metric[])
   }
 
   async function loadAttendance() {
@@ -91,7 +99,7 @@ export default function GroupDetailPage() {
       }
       setCoachId(user.id)
       setAuthorized(true)
-      await loadGroup()
+      await Promise.all([loadGroup(), loadGroupMetrics()])
       setLoading(false)
     }
     init()
@@ -120,8 +128,13 @@ export default function GroupDetailPage() {
     return <div className="p-8 text-center text-slate-400">Loading...</div>
   }
 
+  const pointsFor = (field: keyof Metric) =>
+    groupMetrics
+      .filter((m) => m[field] !== null && m[field] !== undefined)
+      .map((m) => ({ date: m.test_date, value: m[field] as number }))
+
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight uppercase">{groupName}</h1>
         <Link
@@ -131,6 +144,25 @@ export default function GroupDetailPage() {
           <ArrowLeft className="w-4 h-4" />
           <span>All Groups</span>
         </Link>
+      </div>
+
+      <div>
+        <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3">Group Progression</h2>
+        <p className="text-xs text-slate-500 -mt-2 mb-3">
+          Weekly average across every athlete in the group, same trend model as an individual profile.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <TrendBadge metricName={METRIC_INFO.iso.name} metricColor={METRIC_INFO.iso.color} points={pointsFor('iso_belt_squat_peak_force')} />
+          <TrendBadge metricName={METRIC_INFO.cmj.name} metricColor={METRIC_INFO.cmj.color} points={pointsFor('cmj_height_inches')} />
+          <TrendBadge metricName={METRIC_INFO.top_speed.name} metricColor={METRIC_INFO.top_speed.color} points={pointsFor('top_speed')} />
+        </div>
+        {groupMetrics.length === 0 ? (
+          <div className="p-6 rounded-xl border border-slate-800 bg-slate-900 text-center text-sm text-slate-500">
+            No performance data logged for this group's athletes yet.
+          </div>
+        ) : (
+          <MetricsDashboard metrics={groupMetrics} loading={false} athleteName={groupName} />
+        )}
       </div>
 
       <div className="flex items-center justify-between">
@@ -187,8 +219,10 @@ export default function GroupDetailPage() {
               ) : (
                 members.map((m) => (
                   <tr key={m.id} className="hover:bg-slate-800/30 transition">
-                    <td className="py-3 px-5 font-semibold text-white whitespace-nowrap">
-                      {m.firstName} {m.lastName}
+                    <td className="py-3 px-5 font-semibold whitespace-nowrap">
+                      <Link href={`/coach/athlete/${m.id}`} className="text-white hover:text-red-400 transition">
+                        {m.firstName} {m.lastName}
+                      </Link>
                     </td>
                     {weekDates.map((d) => {
                       const dateISO = toISODate(d)
