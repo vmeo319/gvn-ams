@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { ArrowLeft, ChevronLeft, ChevronRight, Check, X } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Check } from 'lucide-react'
 import { getGroupDetail, getWeekAttendance, setAttendanceAction, getGroupMetrics } from '../actions'
 import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
 import TrendBadge from '@/app/components/TrendBadge'
@@ -78,8 +78,9 @@ export default function GroupDetailPage() {
     const res = await getWeekAttendance({ groupId, weekStartISO })
     const map = new Map<string, boolean>()
     if (res.success) {
+      // Blank is the only "not attended" state now -- only record the days actually marked present.
       for (const row of res.results as { athlete_id: string; attendance_date: string; present: boolean }[]) {
-        map.set(`${row.athlete_id}_${row.attendance_date}`, row.present)
+        if (row.present) map.set(`${row.athlete_id}_${row.attendance_date}`, true)
       }
     }
     setAttendance(map)
@@ -112,15 +113,25 @@ export default function GroupDetailPage() {
   async function toggleAttendance(athleteId: string, dateISO: string) {
     if (!coachId) return
     const key = `${athleteId}_${dateISO}`
-    const current = attendance.get(key)
-    const next = current !== true // unmarked or absent -> present; present -> absent
+    const wasPresent = attendance.get(key) === true
+    const next = !wasPresent
     setSavingKey(key)
-    setAttendance((prev) => new Map(prev).set(key, next))
+    setAttendance((prev) => {
+      const copy = new Map(prev)
+      if (next) copy.set(key, true)
+      else copy.delete(key)
+      return copy
+    })
     const res = await setAttendanceAction({ groupId, athleteId, date: dateISO, present: next, markedBy: coachId })
     setSavingKey(null)
     if (!res.success) {
       // revert on failure
-      setAttendance((prev) => new Map(prev).set(key, current === undefined ? false : current))
+      setAttendance((prev) => {
+        const copy = new Map(prev)
+        if (wasPresent) copy.set(key, true)
+        else copy.delete(key)
+        return copy
+      })
     }
   }
 
@@ -227,7 +238,7 @@ export default function GroupDetailPage() {
                     {weekDates.map((d) => {
                       const dateISO = toISODate(d)
                       const key = `${m.id}_${dateISO}`
-                      const present = attendance.get(key)
+                      const present = attendance.get(key) === true
                       const saving = savingKey === key
                       return (
                         <td key={dateISO} className="py-2 px-2 text-center">
@@ -235,14 +246,12 @@ export default function GroupDetailPage() {
                             onClick={() => toggleAttendance(m.id, dateISO)}
                             disabled={saving}
                             className={`w-7 h-7 rounded-lg border flex items-center justify-center mx-auto transition disabled:opacity-50 ${
-                              present === true
+                              present
                                 ? 'bg-emerald-600 border-emerald-500 text-white'
-                                : present === false
-                                ? 'bg-red-950/40 border-red-800 text-red-400'
                                 : 'bg-slate-950 border-slate-700 text-transparent hover:border-slate-500'
                             }`}
                           >
-                            {present === true ? <Check className="w-4 h-4" /> : present === false ? <X className="w-4 h-4" /> : null}
+                            {present && <Check className="w-4 h-4" />}
                           </button>
                         </td>
                       )
@@ -254,7 +263,7 @@ export default function GroupDetailPage() {
           </table>
         </div>
       </div>
-      <p className="text-xs text-slate-500">Tap a box to cycle: unmarked → present → absent → present...</p>
+      <p className="text-xs text-slate-500">Tap a box to mark attended, tap again to clear.</p>
     </div>
   )
 }

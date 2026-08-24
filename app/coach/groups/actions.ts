@@ -151,6 +151,11 @@ export async function getWeekAttendance(data: { groupId: string; weekStartISO: s
   return { success: true, results: rows || [] }
 }
 
+// Attendance is binary now: a row means "attended," no row means blank -- there's no separate
+// "marked absent" state. A visit is one real-world event, so both checking and un-checking
+// apply to every group the athlete belongs to, not just the one a coach happened to click in;
+// that's also what makes the billing-facing attended-days count in getAthleteAttendedDates mean
+// the same thing regardless of which group's tab it was set from.
 export async function setAttendanceAction(data: {
   groupId: string
   athleteId: string
@@ -158,45 +163,36 @@ export async function setAttendanceAction(data: {
   present: boolean
   markedBy: string
 }) {
-  const { error } = await supabaseAdmin.from('group_attendance').upsert(
-    {
-      group_id: data.groupId,
-      athlete_id: data.athleteId,
-      attendance_date: data.date,
-      present: data.present,
-      marked_by: data.markedBy,
-      marked_at: new Date().toISOString(),
-    },
-    { onConflict: 'group_id, athlete_id, attendance_date' }
-  )
-  if (error) return { success: false, error: formatError(error) }
+  const { data: memberships, error: membershipErr } = await supabaseAdmin
+    .from('athlete_groups')
+    .select('group_id')
+    .eq('athlete_id', data.athleteId)
+  if (membershipErr) return { success: false, error: formatError(membershipErr) }
 
-  // Showing up is one real-world event -- if the athlete belongs to other groups too, mark
-  // them present there for the same date as well, so attendance (and the billing-facing
-  // days-attended count, which unions across groups) doesn't depend on which group's tab a
-  // coach happened to check them off in. Marking someone absent stays scoped to the group a
-  // coach is correcting, since that's normally fixing that group's record, not un-doing the
-  // athlete's whole day.
+  const groupIds = (memberships || []).map((m) => m.group_id)
+  if (!groupIds.includes(data.groupId)) groupIds.push(data.groupId)
+
   if (data.present) {
-    const { data: otherMemberships } = await supabaseAdmin
-      .from('athlete_groups')
-      .select('group_id')
+    const { error } = await supabaseAdmin.from('group_attendance').upsert(
+      groupIds.map((groupId) => ({
+        group_id: groupId,
+        athlete_id: data.athleteId,
+        attendance_date: data.date,
+        present: true,
+        marked_by: data.markedBy,
+        marked_at: new Date().toISOString(),
+      })),
+      { onConflict: 'group_id, athlete_id, attendance_date' }
+    )
+    if (error) return { success: false, error: formatError(error) }
+  } else {
+    const { error } = await supabaseAdmin
+      .from('group_attendance')
+      .delete()
+      .in('group_id', groupIds)
       .eq('athlete_id', data.athleteId)
-      .neq('group_id', data.groupId)
-
-    if (otherMemberships && otherMemberships.length > 0) {
-      await supabaseAdmin.from('group_attendance').upsert(
-        otherMemberships.map((g) => ({
-          group_id: g.group_id,
-          athlete_id: data.athleteId,
-          attendance_date: data.date,
-          present: true,
-          marked_by: data.markedBy,
-          marked_at: new Date().toISOString(),
-        })),
-        { onConflict: 'group_id, athlete_id, attendance_date' }
-      )
-    }
+      .eq('attendance_date', data.date)
+    if (error) return { success: false, error: formatError(error) }
   }
 
   return { success: true }
