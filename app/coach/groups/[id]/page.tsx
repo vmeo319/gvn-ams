@@ -122,7 +122,7 @@ export default function GroupDetailPage() {
       else copy.delete(key)
       return copy
     })
-    const res = await setAttendanceAction({ groupId, athleteId, date: dateISO, present: next, markedBy: coachId })
+    const res = await setAttendanceAction({ athleteId, date: dateISO, present: next, markedBy: coachId })
     setSavingKey(null)
     if (!res.success) {
       // revert on failure

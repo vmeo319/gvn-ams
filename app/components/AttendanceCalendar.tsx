@@ -12,7 +12,15 @@ function toISODate(d: Date): string {
 
 const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
-export default function AttendanceCalendar({ attendedDates }: { attendedDates: Set<string> }) {
+export default function AttendanceCalendar({
+  attendedDates,
+  onDayClick,
+  pendingDate,
+}: {
+  attendedDates: Set<string>
+  onDayClick?: (dateISO: string) => void
+  pendingDate?: string | null
+}) {
   const [monthCursor, setMonthCursor] = useState(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -59,19 +67,40 @@ export default function AttendanceCalendar({ attendedDates }: { attendedDates: S
           const iso = toISODate(d)
           const inMonth = d.getMonth() === currentMonth
           const attended = attendedDates.has(iso)
+          const clickable = inMonth && !!onDayClick
+          const saving = pendingDate === iso
+
+          if (!clickable) {
+            return (
+              <div
+                key={i}
+                className={`aspect-square rounded-lg flex items-center justify-center text-xs font-medium border ${
+                  !inMonth
+                    ? 'border-transparent text-slate-700'
+                    : attended
+                      ? 'bg-emerald-600 border-emerald-500 text-white'
+                      : 'bg-slate-950 border-slate-800 text-slate-400'
+                }`}
+              >
+                {d.getDate()}
+              </div>
+            )
+          }
+
           return (
-            <div
+            <button
               key={i}
-              className={`aspect-square rounded-lg flex items-center justify-center text-xs font-medium border ${
-                !inMonth
-                  ? 'border-transparent text-slate-700'
-                  : attended
-                    ? 'bg-emerald-600 border-emerald-500 text-white'
-                    : 'bg-slate-950 border-slate-800 text-slate-400'
+              onClick={() => onDayClick!(iso)}
+              disabled={saving}
+              title={attended ? 'Mark not attended' : 'Mark attended'}
+              className={`aspect-square rounded-lg flex items-center justify-center text-xs font-medium border transition disabled:opacity-50 ${
+                attended
+                  ? 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-600'
               }`}
             >
               {d.getDate()}
-            </div>
+            </button>
           )
         })}
       </div>

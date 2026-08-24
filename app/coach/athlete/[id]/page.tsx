@@ -177,7 +177,7 @@ export default function CoachAthleteDetailPage() {
         <TrendBadge metricName={METRIC_INFO.top_speed.name} metricColor={METRIC_INFO.top_speed.color} points={pointsFor('top_speed')} />
       </div>
 
-      <AttendancePanel athleteId={athleteId} />
+      <AttendancePanel athleteId={athleteId} coachId={coachId!} />
 
       <WeightEntryForm athleteId={athleteId} onLogged={loadMetrics} />
 

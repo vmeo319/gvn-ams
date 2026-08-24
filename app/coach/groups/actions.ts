@@ -132,18 +132,27 @@ export async function getGroupDetail(data: { groupId: string }) {
   }
 }
 
-// One week (7 consecutive dates starting weekStartISO) of attendance for every member of
-// the group — sparse (only marked days have a row), the client fills in the unmarked gaps.
+// One week (7 consecutive dates starting weekStartISO) of attendance for every member of the
+// group. Attendance lives in athlete_attendance (one row per athlete per day, not per group --
+// see the 20260824000000 migration), so this reads that table filtered to the group's current
+// members. Sparse: only marked days have a row, the client fills in the unmarked gaps.
 export async function getWeekAttendance(data: { groupId: string; weekStartISO: string }) {
+  const { data: memberRows } = await supabaseAdmin
+    .from('athlete_groups')
+    .select('athlete_id')
+    .eq('group_id', data.groupId)
+  const athleteIds = (memberRows || []).map((r) => r.athlete_id)
+  if (athleteIds.length === 0) return { success: true, results: [] }
+
   const start = new Date(data.weekStartISO + 'T00:00:00Z')
   const end = new Date(start)
   end.setUTCDate(end.getUTCDate() + 6)
   const endISO = end.toISOString().split('T')[0]
 
   const { data: rows, error } = await supabaseAdmin
-    .from('group_attendance')
+    .from('athlete_attendance')
     .select('athlete_id, attendance_date, present')
-    .eq('group_id', data.groupId)
+    .in('athlete_id', athleteIds)
     .gte('attendance_date', data.weekStartISO)
     .lte('attendance_date', endISO)
 
@@ -151,45 +160,34 @@ export async function getWeekAttendance(data: { groupId: string; weekStartISO: s
   return { success: true, results: rows || [] }
 }
 
-// Attendance is binary now: a row means "attended," no row means blank -- there's no separate
-// "marked absent" state. A visit is one real-world event, so both checking and un-checking
-// apply to every group the athlete belongs to, not just the one a coach happened to click in;
-// that's also what makes the billing-facing attended-days count in getAthleteAttendedDates mean
-// the same thing regardless of which group's tab it was set from.
+// Attendance is binary and lives at the athlete level, not per group -- one row per
+// (athlete, date), no group_id at all. That's what makes cross-group consistency automatic
+// instead of something app code has to cascade by hand: marking someone present from a group's
+// weekly grid or from their own coach-view calendar both write the same row, so there's only
+// ever one to keep track of. It's also what lets an athlete in zero groups still have
+// attendance taken directly from their profile.
 export async function setAttendanceAction(data: {
-  groupId: string
   athleteId: string
   date: string
   present: boolean
   markedBy: string
 }) {
-  const { data: memberships, error: membershipErr } = await supabaseAdmin
-    .from('athlete_groups')
-    .select('group_id')
-    .eq('athlete_id', data.athleteId)
-  if (membershipErr) return { success: false, error: formatError(membershipErr) }
-
-  const groupIds = (memberships || []).map((m) => m.group_id)
-  if (!groupIds.includes(data.groupId)) groupIds.push(data.groupId)
-
   if (data.present) {
-    const { error } = await supabaseAdmin.from('group_attendance').upsert(
-      groupIds.map((groupId) => ({
-        group_id: groupId,
+    const { error } = await supabaseAdmin.from('athlete_attendance').upsert(
+      {
         athlete_id: data.athleteId,
         attendance_date: data.date,
         present: true,
         marked_by: data.markedBy,
         marked_at: new Date().toISOString(),
-      })),
-      { onConflict: 'group_id, athlete_id, attendance_date' }
+      },
+      { onConflict: 'athlete_id, attendance_date' }
     )
     if (error) return { success: false, error: formatError(error) }
   } else {
     const { error } = await supabaseAdmin
-      .from('group_attendance')
+      .from('athlete_attendance')
       .delete()
-      .in('group_id', groupIds)
       .eq('athlete_id', data.athleteId)
       .eq('attendance_date', data.date)
     if (error) return { success: false, error: formatError(error) }
@@ -264,14 +262,12 @@ export async function getGroupMetrics(data: { groupId: string }) {
   }
 }
 
-// Distinct dates an athlete was marked present, across every group they belong to -- the
-// billing-facing "days attended" figure. Cross-group cascading in setAttendanceAction means a
-// single visit is present in every group's rows for that date, but dedupe here anyway in case
-// a coach later marks one group absent while another still has it present for the same day.
+// Dates an athlete was marked present -- the billing-facing "days attended" figure, and also
+// what feeds the calendar on their coach-view profile.
 export async function getAthleteAttendedDates(data: { athleteId: string; sinceISO?: string }) {
   try {
     let query = supabaseAdmin
-      .from('group_attendance')
+      .from('athlete_attendance')
       .select('attendance_date')
       .eq('athlete_id', data.athleteId)
       .eq('present', true)
@@ -280,7 +276,7 @@ export async function getAthleteAttendedDates(data: { athleteId: string; sinceIS
     const { data: rows, error } = await query
     if (error) return { success: false, error: formatError(error), dates: [] }
 
-    const dates = Array.from(new Set((rows || []).map((r) => r.attendance_date))).sort()
+    const dates = (rows || []).map((r) => r.attendance_date).sort()
     return { success: true, dates }
   } catch (err: any) {
     return { success: false, error: formatError(err), dates: [] }
