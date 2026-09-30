@@ -382,9 +382,10 @@ export interface AthleteChange {
   athleteId: string
   name: string
   first: number
-  last: number
+  // Best reading after the first (most recent for weight).
+  compare: number
   firstDate: string
-  lastDate: string
+  compareDate: string
   pct: number
 }
 
@@ -497,20 +498,26 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
         }))
         .sort((a, b) => b.value - a.value)
 
-      // % change from the first reading in range to the last; needs two different test days.
+      // % change from the first reading in range to the best reading after it (so an athlete
+      // only shows a decline if every later test was below their first). Weight has no "best",
+      // so it compares first to most recent. Needs two different test days.
       change[field] = [...byAthlete.entries()]
         .filter(([, points]) => points.length >= 2 && points[0].date !== points[points.length - 1].date && points[0].value !== 0)
         .map(([athleteId, points]) => {
           const first = points[0]
-          const last = points[points.length - 1]
+          const later = points.slice(1)
+          const compare =
+            BEST_MODE[field] === 'max'
+              ? later.reduce((best, p) => (p.value > best.value ? p : best))
+              : later[later.length - 1]
           return {
             athleteId,
             name: names.get(athleteId) || 'Unknown',
             first: first.value,
-            last: last.value,
+            compare: compare.value,
             firstDate: first.date,
-            lastDate: last.date,
-            pct: ((last.value - first.value) / first.value) * 100,
+            compareDate: compare.date,
+            pct: ((compare.value - first.value) / first.value) * 100,
           }
         })
         .sort((a, b) => b.pct - a.pct)

@@ -36,11 +36,12 @@ const toISO = (d: Date) => {
   return `${y}-${m}-${day}`
 }
 
-// "This summer" = Jun 1 - Aug 31 of the current year once June has started, otherwise last year's.
+// GVN's summer training block: Jun 1 - Aug 14 of the current year once June has started,
+// otherwise last year's.
 function summerRange(): { start: string; end: string; label: string } {
   const now = new Date()
   const year = now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1
-  return { start: `${year}-06-01`, end: `${year}-08-31`, label: `Summer ${year}` }
+  return { start: `${year}-06-01`, end: `${year}-08-14`, label: `Summer ${year}` }
 }
 
 function presetRange(preset: RangePreset): { start: string; end: string } {
@@ -402,14 +403,14 @@ function MetricSection({
             render={(r: AthleteBest) => `${r.value.toFixed(info.decimals)} ${info.unit}`}
           />
           <RankingTable
-            title="% change over range"
+            title={isWeight ? '% change (first → latest)' : '% change (first → best after)'}
             topLabel={isWeight ? 'Biggest gain' : 'Most improved'}
             bottomLabel={isWeight ? 'Biggest loss' : 'Most declined'}
             neutral={isWeight}
             rows={change}
             render={(r: AthleteChange) => `${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%`}
             detail={(r: AthleteChange) =>
-              `${r.first.toFixed(info.decimals)} → ${r.last.toFixed(info.decimals)} (${formatTickDate(r.firstDate)} – ${formatTickDate(r.lastDate)})`
+              `${r.first.toFixed(info.decimals)} → ${r.compare.toFixed(info.decimals)} (${formatTickDate(r.firstDate)} – ${formatTickDate(r.compareDate)})`
             }
             emptyNote="Needs 2+ test days in range"
           />
