@@ -50,6 +50,7 @@ export default function GroupDetailPage() {
   const [authorized, setAuthorized] = useState(false)
   const [coachId, setCoachId] = useState<string | null>(null)
   const [groupName, setGroupName] = useState('')
+  const [groupLocation, setGroupLocation] = useState('')
   const [members, setMembers] = useState<Member[]>([])
   const [groupMetrics, setGroupMetrics] = useState<Metric[]>([])
   const [loading, setLoading] = useState(true)
@@ -65,6 +66,7 @@ export default function GroupDetailPage() {
     const res = await getGroupDetail({ groupId })
     if (res.success) {
       setGroupName(res.group!.name)
+      setGroupLocation(res.group!.locationName)
       setMembers(res.members as Member[])
     }
   }
@@ -147,7 +149,10 @@ export default function GroupDetailPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold tracking-tight uppercase">{groupName}</h1>
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight uppercase">{groupName}</h1>
+          {groupLocation && <p className="text-sm text-slate-400 mt-1">{groupLocation}</p>}
+        </div>
         <Link
           href="/coach/groups"
           className="flex items-center space-x-2 bg-slate-900 hover:bg-slate-800 text-slate-300 font-semibold px-4 py-2 rounded-lg border border-slate-800 transition text-sm"

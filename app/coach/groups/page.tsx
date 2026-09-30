@@ -10,7 +10,15 @@ import { listGroupsWithCounts, createGroupAction, deleteGroupAction } from './ac
 interface GroupRow {
   id: string
   name: string
+  locationId: string
+  locationName: string
+  birthYear: number | null
   athleteCount: number
+}
+
+interface LocationRow {
+  id: string
+  name: string
 }
 
 export default function GroupsListPage() {
@@ -18,7 +26,9 @@ export default function GroupsListPage() {
   const [authorized, setAuthorized] = useState(false)
   const [groups, setGroups] = useState<GroupRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [locations, setLocations] = useState<LocationRow[]>([])
   const [newName, setNewName] = useState('')
+  const [newLocationId, setNewLocationId] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
 
@@ -42,6 +52,8 @@ export default function GroupsListPage() {
         return
       }
       setAuthorized(true)
+      const { data: locs } = await supabase.from('locations').select('id, name').order('name')
+      setLocations((locs || []) as LocationRow[])
       await loadGroups()
     }
     init()
@@ -51,9 +63,13 @@ export default function GroupsListPage() {
     e.preventDefault()
     const name = newName.trim()
     if (!name) return
+    if (!newLocationId) {
+      setError('Pick a location for the group.')
+      return
+    }
     setError('')
     setCreating(true)
-    const res = await createGroupAction({ name })
+    const res = await createGroupAction({ name, locationId: newLocationId })
     setCreating(false)
     if (!res.success) {
       setError(res.error || 'Failed to create group.')
@@ -68,6 +84,14 @@ export default function GroupsListPage() {
     const res = await deleteGroupAction({ groupId: id })
     if (res.success) await loadGroups()
     else alert(res.error)
+  }
+
+  // Already sorted server-side by location, then birth year, then name.
+  const groupsByLocation: [string, GroupRow[]][] = []
+  for (const g of groups) {
+    const last = groupsByLocation[groupsByLocation.length - 1]
+    if (last && last[0] === g.locationName) last[1].push(g)
+    else groupsByLocation.push([g.locationName, [g]])
   }
 
   if (!authorized) {
@@ -93,11 +117,21 @@ export default function GroupsListPage() {
           placeholder="New group name (e.g. Tuesday Skaters)..."
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
-          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"
+          className="flex-1 min-w-0 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"
         />
+        <select
+          value={newLocationId}
+          onChange={(e) => setNewLocationId(e.target.value)}
+          className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"
+        >
+          <option value="">Location...</option>
+          {locations.map((l) => (
+            <option key={l.id} value={l.id}>{l.name}</option>
+          ))}
+        </select>
         <button
           type="submit"
-          disabled={creating || !newName.trim()}
+          disabled={creating || !newName.trim() || !newLocationId}
           className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white font-semibold px-4 py-2.5 rounded-lg transition text-sm disabled:opacity-50"
         >
           <Plus className="w-4 h-4" />
@@ -109,29 +143,42 @@ export default function GroupsListPage() {
         <div className="p-3 bg-red-950/60 border border-red-800 rounded-lg text-xs text-red-300">{error}</div>
       )}
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900 divide-y divide-slate-800">
-        {loading && <div className="p-6 text-center text-slate-400">Loading groups...</div>}
-        {!loading && groups.length === 0 && (
-          <div className="p-6 text-center text-slate-400">No groups yet — create one above.</div>
-        )}
-        {groups.map((g) => (
-          <div key={g.id} className="flex items-center justify-between px-5 py-4 hover:bg-slate-800/40 transition">
-            <Link href={`/coach/groups/${g.id}`} className="flex-1 flex items-center gap-3">
-              <Users className="w-4 h-4 text-slate-500" />
-              <span className="font-semibold text-white">{g.name}</span>
-              <span className="text-xs text-slate-500">
-                {g.athleteCount} athlete{g.athleteCount === 1 ? '' : 's'}
-              </span>
-            </Link>
-            <button
-              onClick={() => handleDelete(g.id, g.name)}
-              className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+      {loading && <div className="p-6 text-center text-slate-400">Loading groups...</div>}
+      {!loading && groups.length === 0 && (
+        <div className="p-6 text-center text-slate-400 rounded-xl border border-slate-800 bg-slate-900">
+          No groups yet — create one above.
+        </div>
+      )}
+      {!loading &&
+        groupsByLocation.map(([locationName, locationGroups]) => (
+          <div key={locationName} className="space-y-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">{locationName}</h2>
+            <div className="rounded-xl border border-slate-800 bg-slate-900 divide-y divide-slate-800">
+              {locationGroups.map((g) => (
+                <div key={g.id} className="flex items-center justify-between px-5 py-4 hover:bg-slate-800/40 transition">
+                  <Link href={`/coach/groups/${g.id}`} className="flex-1 flex items-center gap-3">
+                    <Users className="w-4 h-4 text-slate-500" />
+                    <span className="font-semibold text-white">{g.name}</span>
+                    {g.birthYear !== null && (
+                      <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700/60 text-[10px] font-medium text-slate-400">
+                        Birth year
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-500">
+                      {g.athleteCount} athlete{g.athleteCount === 1 ? '' : 's'}
+                    </span>
+                  </Link>
+                  <button
+                    onClick={() => handleDelete(g.id, g.name)}
+                    className="p-2 rounded-lg hover:bg-red-950/40 text-slate-500 hover:text-red-400 transition"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
-      </div>
     </div>
   )
 }

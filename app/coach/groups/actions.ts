@@ -18,9 +18,38 @@ const formatError = (err: any) => {
   return 'Something went wrong.'
 }
 
+export interface GroupRow {
+  id: string
+  name: string
+  locationId: string
+  locationName: string
+  birthYear: number | null
+}
+
+const GROUP_SELECT = 'id, name, location_id, birth_year, locations(name)'
+
+function toGroupRow(g: any): GroupRow {
+  return {
+    id: g.id,
+    name: g.name,
+    locationId: g.location_id,
+    locationName: g.locations?.name || '',
+    birthYear: g.birth_year ?? null,
+  }
+}
+
+// Location first, then that location's birth-year groups oldest to youngest, then the
+// coach-made groups by name.
+function compareGroups(a: GroupRow, b: GroupRow) {
+  if (a.locationName !== b.locationName) return a.locationName.localeCompare(b.locationName)
+  if ((a.birthYear === null) !== (b.birthYear === null)) return a.birthYear === null ? 1 : -1
+  if (a.birthYear !== null && b.birthYear !== null) return a.birthYear - b.birthYear
+  return a.name.localeCompare(b.name)
+}
+
 export async function listGroupsWithCounts() {
   try {
-    const { data: groups, error } = await supabaseAdmin.from('groups').select('id, name').order('name')
+    const { data: groups, error } = await supabaseAdmin.from('groups').select(GROUP_SELECT)
     if (error) return { success: false, error: formatError(error), results: [] }
 
     const { data: memberships } = await supabaseAdmin.from('athlete_groups').select('group_id')
@@ -29,31 +58,66 @@ export async function listGroupsWithCounts() {
 
     return {
       success: true,
-      results: (groups || []).map((g) => ({ id: g.id, name: g.name, athleteCount: counts.get(g.id) || 0 })),
+      results: (groups || [])
+        .map(toGroupRow)
+        .sort(compareGroups)
+        .map((g) => ({ ...g, athleteCount: counts.get(g.id) || 0 })),
     }
   } catch (err: any) {
     return { success: false, error: formatError(err), results: [] }
   }
 }
 
+// Every location each athlete trains at: their primary profiles.location_id plus any extras
+// in athlete_locations -- the same set the DB uses to decide which groups they may join.
+export async function listAllAthleteLocations() {
+  const [{ data: profiles, error }, { data: extras }] = await Promise.all([
+    supabaseAdmin.from('profiles').select('id, location_id').not('location_id', 'is', null),
+    supabaseAdmin.from('athlete_locations').select('profile_id, location_id'),
+  ])
+  if (error) return { success: false, error: formatError(error), results: {} as Record<string, string[]> }
+  const map: Record<string, string[]> = {}
+  const add = (id: string, loc: string) => {
+    map[id] = map[id] || []
+    if (!map[id].includes(loc)) map[id].push(loc)
+  }
+  for (const p of profiles || []) add(p.id, p.location_id)
+  for (const e of extras || []) add(e.profile_id, e.location_id)
+  return { success: true, results: map }
+}
+
 // Select-then-insert (not upsert(onConflict)) — same reasoning as exercise_library's
 // createLibraryExercise: the unique index is a lower(trim(name)) expression, which
-// PostgREST's onConflict can't target with plain column syntax.
-export async function createGroupAction(data: { name: string }) {
+// PostgREST's onConflict can't target with plain column syntax. Names are unique per
+// location, so the same name can exist at two different locations.
+export async function createGroupAction(data: { name: string; locationId: string }) {
   try {
     const name = data.name.trim()
     if (!name) return { success: false, error: 'Group name is required.' }
+    if (!data.locationId) return { success: false, error: 'Pick a location for the group.' }
 
-    const { data: existing } = await supabaseAdmin.from('groups').select('id, name').ilike('name', name).maybeSingle()
-    if (existing) return { success: true, group: existing }
+    const findExisting = () =>
+      supabaseAdmin
+        .from('groups')
+        .select(GROUP_SELECT)
+        .eq('location_id', data.locationId)
+        .ilike('name', name)
+        .maybeSingle()
 
-    const { data: inserted, error } = await supabaseAdmin.from('groups').insert({ name }).select('id, name').single()
+    const { data: existing } = await findExisting()
+    if (existing) return { success: true, group: toGroupRow(existing) }
+
+    const { data: inserted, error } = await supabaseAdmin
+      .from('groups')
+      .insert({ name, location_id: data.locationId })
+      .select(GROUP_SELECT)
+      .single()
     if (error) {
-      const { data: raceWinner } = await supabaseAdmin.from('groups').select('id, name').ilike('name', name).maybeSingle()
-      if (raceWinner) return { success: true, group: raceWinner }
+      const { data: raceWinner } = await findExisting()
+      if (raceWinner) return { success: true, group: toGroupRow(raceWinner) }
       return { success: false, error: formatError(error) }
     }
-    return { success: true, group: inserted }
+    return { success: true, group: toGroupRow(inserted) }
   } catch (err: any) {
     return { success: false, error: formatError(err) }
   }
@@ -75,16 +139,33 @@ export async function deleteGroupAction(data: { groupId: string }) {
 
 // Replaces the full set of groups an athlete belongs to — any coach can call this (unlike
 // admin's location editing), matching the ask that group membership is open to every coach.
+// A trigger on athlete_groups rejects any group outside the athlete's locations.
 export async function updateAthleteGroupsAction(data: { athleteId: string; groupIds: string[] }) {
   try {
-    const { error: deleteErr } = await supabaseAdmin.from('athlete_groups').delete().eq('athlete_id', data.athleteId)
-    if (deleteErr) return { success: false, error: formatError(deleteErr) }
+    // Diff rather than delete-all-then-insert, so a rejected add can't leave the athlete
+    // stripped of groups they already had.
+    const { data: currentRows, error: readErr } = await supabaseAdmin
+      .from('athlete_groups')
+      .select('group_id')
+      .eq('athlete_id', data.athleteId)
+    if (readErr) return { success: false, error: formatError(readErr) }
+    const current = new Set((currentRows || []).map((r) => r.group_id))
+    const toAdd = data.groupIds.filter((id) => !current.has(id))
+    const toRemove = [...current].filter((id) => !data.groupIds.includes(id))
 
-    if (data.groupIds.length > 0) {
+    if (toAdd.length > 0) {
       const { error: insertErr } = await supabaseAdmin
         .from('athlete_groups')
-        .insert(data.groupIds.map((groupId) => ({ athlete_id: data.athleteId, group_id: groupId })))
+        .insert(toAdd.map((groupId) => ({ athlete_id: data.athleteId, group_id: groupId })))
       if (insertErr) return { success: false, error: formatError(insertErr) }
+    }
+    if (toRemove.length > 0) {
+      const { error: deleteErr } = await supabaseAdmin
+        .from('athlete_groups')
+        .delete()
+        .eq('athlete_id', data.athleteId)
+        .in('group_id', toRemove)
+      if (deleteErr) return { success: false, error: formatError(deleteErr) }
     }
     return { success: true }
   } catch (err: any) {
@@ -102,12 +183,13 @@ export async function listAllAthleteGroups() {
 
 export async function getGroupDetail(data: { groupId: string }) {
   try {
-    const { data: group, error: groupErr } = await supabaseAdmin
+    const { data: groupRow, error: groupErr } = await supabaseAdmin
       .from('groups')
-      .select('id, name')
+      .select(GROUP_SELECT)
       .eq('id', data.groupId)
       .single()
-    if (groupErr || !group) return { success: false, error: 'Group not found.' }
+    if (groupErr || !groupRow) return { success: false, error: 'Group not found.' }
+    const group = toGroupRow(groupRow)
 
     const { data: memberRows } = await supabaseAdmin
       .from('athlete_groups')

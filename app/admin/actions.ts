@@ -168,14 +168,31 @@ export async function deleteLocationAction(data: { id: string }) {
 // single-location features keep showing something sensible without needing their own changes.
 export async function updateProfileLocationsAction(data: { profileId: string; locationIds: string[] }) {
   try {
-    const { error: deleteErr } = await supabaseAdmin.from('athlete_locations').delete().eq('profile_id', data.profileId)
-    if (deleteErr) return { success: false, error: formatError(deleteErr) }
+    // Diffed, not delete-all-then-insert: a DB trigger re-syncs group membership on every
+    // athlete_locations change, and a transient "no extra locations" state would drop the
+    // athlete out of coach-made groups at locations they're actually keeping.
+    const { data: currentRows, error: readErr } = await supabaseAdmin
+      .from('athlete_locations')
+      .select('location_id')
+      .eq('profile_id', data.profileId)
+    if (readErr) return { success: false, error: formatError(readErr) }
+    const current = new Set((currentRows || []).map((r) => r.location_id))
+    const toAdd = data.locationIds.filter((id) => !current.has(id))
+    const toRemove = [...current].filter((id) => !data.locationIds.includes(id))
 
-    if (data.locationIds.length > 0) {
+    if (toAdd.length > 0) {
       const { error: insertErr } = await supabaseAdmin
         .from('athlete_locations')
-        .insert(data.locationIds.map((locationId) => ({ profile_id: data.profileId, location_id: locationId })))
+        .insert(toAdd.map((locationId) => ({ profile_id: data.profileId, location_id: locationId })))
       if (insertErr) return { success: false, error: formatError(insertErr) }
+    }
+    if (toRemove.length > 0) {
+      const { error: deleteErr } = await supabaseAdmin
+        .from('athlete_locations')
+        .delete()
+        .eq('profile_id', data.profileId)
+        .in('location_id', toRemove)
+      if (deleteErr) return { success: false, error: formatError(deleteErr) }
     }
 
     const { error: profileErr } = await supabaseAdmin

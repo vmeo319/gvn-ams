@@ -9,7 +9,7 @@ import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV, triggerManualSyncAction } from './actions'
 import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatus'
-import { listGroupsWithCounts, listAllAthleteGroups } from './groups/actions'
+import { listGroupsWithCounts, listAllAthleteGroups, listAllAthleteLocations } from './groups/actions'
 import GroupCell, { GroupOption } from './groups/GroupCell'
 
 // These 3 coaches only work out of North Shore day-to-day, so default the dashboard's
@@ -185,6 +185,7 @@ export default function CoachDashboard() {
   const [syncResult, setSyncResult] = useState<{ source: string; success: boolean; msg: string } | null>(null)
   const [groupOptions, setGroupOptions] = useState<GroupOption[]>([])
   const [groupsByAthlete, setGroupsByAthlete] = useState<Record<string, string[]>>({})
+  const [locationsByAthlete, setLocationsByAthlete] = useState<Record<string, string[]>>({})
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false)
   const [openGroupCellId, setOpenGroupCellId] = useState<string | null>(null)
@@ -272,8 +273,23 @@ export default function CoachDashboard() {
   }
 
   const fetchGroups = async () => {
-    const [groupsRes, membershipRes] = await Promise.all([listGroupsWithCounts(), listAllAthleteGroups()])
-    if (groupsRes.success) setGroupOptions(groupsRes.results.map((g) => ({ id: g.id, name: g.name })))
+    const [groupsRes, membershipRes, locationsRes] = await Promise.all([
+      listGroupsWithCounts(),
+      listAllAthleteGroups(),
+      listAllAthleteLocations(),
+    ])
+    if (groupsRes.success) {
+      setGroupOptions(
+        groupsRes.results.map((g) => ({
+          id: g.id,
+          name: g.name,
+          locationId: g.locationId,
+          locationName: g.locationName,
+          birthYear: g.birthYear,
+        }))
+      )
+    }
+    if (locationsRes.success) setLocationsByAthlete(locationsRes.results)
     if (membershipRes.success) {
       const map: Record<string, string[]> = {}
       for (const row of membershipRes.results as { athlete_id: string; group_id: string }[]) {
@@ -283,6 +299,12 @@ export default function CoachDashboard() {
       setGroupsByAthlete(map)
     }
   }
+
+  // When a location filter is on, only offer that location's groups in the group filter.
+  const filterableGroups =
+    selectedLocations.length === 0
+      ? groupOptions
+      : groupOptions.filter((g) => selectedLocations.includes(g.locationName))
 
   const toggleGroupSelect = (groupId: string) => {
     setSelectedGroups((prev) => (prev.includes(groupId) ? prev.filter((g) => g !== groupId) : [...prev, groupId]))
@@ -366,6 +388,8 @@ export default function CoachDashboard() {
     }
 
     fetchLeaderboard()
+    // A new/edited birth year or location puts them into a birth-year group DB-side.
+    fetchGroups()
 
     if (res.inviteLink) {
       setInviteLink(res.inviteLink)
@@ -1067,10 +1091,10 @@ export default function CoachDashboard() {
                 <div className="text-xs font-semibold text-slate-400 px-2 py-1 uppercase tracking-wider">
                   Filter by Group
                 </div>
-                {groupOptions.length === 0 && (
+                {filterableGroups.length === 0 && (
                   <div className="px-2 py-2 text-xs text-slate-500">No groups yet.</div>
                 )}
-                {groupOptions.map((g) => {
+                {filterableGroups.map((g) => {
                   const isChecked = selectedGroups.includes(g.id)
                   return (
                     <button
@@ -1078,7 +1102,10 @@ export default function CoachDashboard() {
                       onClick={() => toggleGroupSelect(g.id)}
                       className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
                     >
-                      <span>{g.name}</span>
+                      <span>
+                        {g.name}
+                        <span className="text-slate-500 font-normal"> · {g.locationName}</span>
+                      </span>
                       {isChecked && <Check className="w-4 h-4 text-red-500" />}
                     </button>
                   )
@@ -1170,12 +1197,14 @@ export default function CoachDashboard() {
                         <td className="py-4 px-4">
                           <GroupCell
                             athleteId={a.athlete_id}
+                            athleteLocationIds={locationsByAthlete[a.athlete_id] || []}
+                            locations={locationOptions}
                             selectedIds={groupsByAthlete[a.athlete_id] || []}
                             allGroups={groupOptions}
                             isOpen={openGroupCellId === a.athlete_id}
                             onToggleOpen={() => setOpenGroupCellId((cur) => (cur === a.athlete_id ? null : a.athlete_id))}
                             onSaved={(ids) => setGroupsByAthlete((prev) => ({ ...prev, [a.athlete_id]: ids }))}
-                            onGroupCreated={(g) => setGroupOptions((prev) => [...prev, g].sort((x, y) => x.name.localeCompare(y.name)))}
+                            onGroupCreated={(g) => setGroupOptions((prev) => (prev.some((x) => x.id === g.id) ? prev : [...prev, g]))}
                           />
                         </td>
                         <td className="py-4 px-4">
