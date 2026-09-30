@@ -364,3 +364,170 @@ export async function getAthleteAttendedDates(data: { athleteId: string; sinceIS
     return { success: false, error: formatError(err), dates: [] }
   }
 }
+
+// ---- Multi-group metrics report ----------------------------------------------------------
+// Powers /coach/groups/metrics: weekly group-average series for each selected group (and the
+// combined selection), plus per-athlete best values and % change across the chosen range, from
+// which the page picks its top/bottom 3.
+
+export type ReportMetricField = (typeof GROUP_METRIC_FIELDS)[number]
+
+export interface AthleteBest {
+  athleteId: string
+  name: string
+  value: number
+}
+
+export interface AthleteChange {
+  athleteId: string
+  name: string
+  first: number
+  last: number
+  firstDate: string
+  lastDate: string
+  pct: number
+}
+
+export interface GroupsMetricsReport {
+  groups: { id: string; name: string; locationName: string; memberCount: number }[]
+  athleteCount: number
+  // One row per week: test_date (the week's Monday), `all` (every selected athlete), and one
+  // key per group id.
+  series: Record<ReportMetricField, Record<string, number | string | null>[]>
+  best: Record<ReportMetricField, AthleteBest[]>
+  change: Record<ReportMetricField, AthleteChange[]>
+}
+
+// Weight has no "best" -- the most recent reading in range is what counts.
+const BEST_MODE: Record<ReportMetricField, 'max' | 'latest'> = {
+  iso_belt_squat_peak_force: 'max',
+  top_speed: 'max',
+  cmj_height_inches: 'max',
+  weight_lbs: 'latest',
+}
+
+export async function getGroupsMetricsReport(data: { groupIds: string[]; startISO: string; endISO: string }) {
+  try {
+    if (data.groupIds.length === 0) return { success: false, error: 'Select at least one group.' }
+
+    const { data: groupRows, error: groupErr } = await supabaseAdmin
+      .from('groups')
+      .select(GROUP_SELECT)
+      .in('id', data.groupIds)
+    if (groupErr) return { success: false, error: formatError(groupErr) }
+    const groups = (groupRows || []).map(toGroupRow).sort(compareGroups)
+
+    const { data: memberRows, error: memberErr } = await supabaseAdmin
+      .from('athlete_groups')
+      .select('athlete_id, group_id')
+      .in('group_id', data.groupIds)
+    if (memberErr) return { success: false, error: formatError(memberErr) }
+
+    const groupsByAthlete = new Map<string, string[]>()
+    for (const r of memberRows || []) {
+      if (!groupsByAthlete.has(r.athlete_id)) groupsByAthlete.set(r.athlete_id, [])
+      groupsByAthlete.get(r.athlete_id)!.push(r.group_id)
+    }
+    const athleteIds = [...groupsByAthlete.keys()]
+
+    const names = new Map<string, string>()
+    const rows: { athlete_id: string; test_date: string; [k: string]: number | string | null }[] = []
+    // Chunked by athlete (keeps the id list out of URL-length trouble) and paged (PostgREST
+    // caps a response at 1000 rows).
+    for (let i = 0; i < athleteIds.length; i += 100) {
+      const chunk = athleteIds.slice(i, i + 100)
+      const { data: profiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name').in('id', chunk)
+      for (const p of profiles || []) names.set(p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim())
+
+      for (let from = 0; ; from += 1000) {
+        const { data: page, error } = await supabaseAdmin
+          .from('performance_metrics')
+          .select(`athlete_id, test_date, ${GROUP_METRIC_FIELDS.join(', ')}`)
+          .in('athlete_id', chunk)
+          .gte('test_date', data.startISO)
+          .lte('test_date', data.endISO)
+          .order('test_date', { ascending: true })
+          .range(from, from + 999)
+        if (error) return { success: false, error: formatError(error) }
+        rows.push(...((page || []) as unknown as typeof rows))
+        if (!page || page.length < 1000) break
+      }
+    }
+
+    const series = {} as GroupsMetricsReport['series']
+    const best = {} as GroupsMetricsReport['best']
+    const change = {} as GroupsMetricsReport['change']
+
+    for (const field of GROUP_METRIC_FIELDS) {
+      // Each athlete's readings for this metric, oldest first.
+      const byAthlete = new Map<string, { date: string; value: number }[]>()
+      for (const r of rows) {
+        const v = r[field]
+        if (v === null || v === undefined) continue
+        if (!byAthlete.has(r.athlete_id)) byAthlete.set(r.athlete_id, [])
+        byAthlete.get(r.athlete_id)!.push({ date: r.test_date, value: Number(v) })
+      }
+
+      // Weekly series: average each athlete within the week first, then average athletes, so
+      // someone tested five times that week doesn't outweigh someone tested once.
+      const weekAthlete = new Map<string, Map<string, { sum: number; n: number }>>()
+      for (const [athleteId, points] of byAthlete) {
+        for (const p of points) {
+          const week = mondayOfUTC(p.date)
+          if (!weekAthlete.has(week)) weekAthlete.set(week, new Map())
+          const cell = weekAthlete.get(week)!.get(athleteId) || { sum: 0, n: 0 }
+          cell.sum += p.value
+          cell.n += 1
+          weekAthlete.get(week)!.set(athleteId, cell)
+        }
+      }
+      series[field] = [...weekAthlete.keys()].sort().map((week) => {
+        const perAthlete = [...weekAthlete.get(week)!.entries()].map(([id, c]) => ({ id, avg: c.sum / c.n }))
+        const mean = (list: { avg: number }[]) => (list.length ? list.reduce((a, b) => a + b.avg, 0) / list.length : null)
+        const row: Record<string, number | string | null> = { test_date: week, all: mean(perAthlete) }
+        for (const g of groups) row[g.id] = mean(perAthlete.filter((a) => groupsByAthlete.get(a.id)?.includes(g.id)))
+        return row
+      })
+
+      best[field] = [...byAthlete.entries()]
+        .map(([athleteId, points]) => ({
+          athleteId,
+          name: names.get(athleteId) || 'Unknown',
+          value: BEST_MODE[field] === 'max' ? Math.max(...points.map((p) => p.value)) : points[points.length - 1].value,
+        }))
+        .sort((a, b) => b.value - a.value)
+
+      // % change from the first reading in range to the last; needs two different test days.
+      change[field] = [...byAthlete.entries()]
+        .filter(([, points]) => points.length >= 2 && points[0].date !== points[points.length - 1].date && points[0].value !== 0)
+        .map(([athleteId, points]) => {
+          const first = points[0]
+          const last = points[points.length - 1]
+          return {
+            athleteId,
+            name: names.get(athleteId) || 'Unknown',
+            first: first.value,
+            last: last.value,
+            firstDate: first.date,
+            lastDate: last.date,
+            pct: ((last.value - first.value) / first.value) * 100,
+          }
+        })
+        .sort((a, b) => b.pct - a.pct)
+    }
+
+    const memberCounts = new Map<string, number>()
+    for (const r of memberRows || []) memberCounts.set(r.group_id, (memberCounts.get(r.group_id) || 0) + 1)
+
+    const report: GroupsMetricsReport = {
+      groups: groups.map((g) => ({ id: g.id, name: g.name, locationName: g.locationName, memberCount: memberCounts.get(g.id) || 0 })),
+      athleteCount: athleteIds.length,
+      series,
+      best,
+      change,
+    }
+    return { success: true, report }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}

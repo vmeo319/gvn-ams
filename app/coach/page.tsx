@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck, RefreshCw, Users } from 'lucide-react'
+import { Plus, Search, FileSpreadsheet, Download, Upload, AlertCircle, CheckCircle2, Zap, MapPin, Check, ChevronDown, LogOut, Copy, Trophy, UserCircle2, UserPlus, ShieldCheck, RefreshCw, Users, LineChart as LineChartIcon } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { upsertAthleteAction, uploadMetricRows, uploadHawkinsScoreboardCSV, triggerManualSyncAction } from './actions'
@@ -1121,6 +1121,16 @@ export default function CoachDashboard() {
               </div>
             )}
           </div>
+
+          {selectedGroups.length > 0 && (
+            <Link
+              href={`/coach/groups/metrics?ids=${selectedGroups.join(',')}`}
+              className="flex items-center space-x-2 bg-violet-600 hover:bg-violet-500 text-white font-semibold rounded-lg px-4 py-2 text-sm transition"
+            >
+              <LineChartIcon className="w-4 h-4" />
+              <span>View Group Metrics</span>
+            </Link>
+          )}
 
           <button
             onClick={() => setShowLevels((v) => !v)}
