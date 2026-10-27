@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
+import { CMJ_DETAIL_FIELDS, JumpStrategy, jumpStrategy } from '@/app/components/metricInfo'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -370,7 +371,11 @@ export async function getAthleteAttendedDates(data: { athleteId: string; sinceIS
 // combined selection), plus per-athlete best values and % change across the chosen range, from
 // which the page picks its top/bottom 3.
 
-export type ReportMetricField = (typeof GROUP_METRIC_FIELDS)[number]
+// The report also covers the CMJ force-plate detail (braking/propulsive forces, phases, impulse
+// ratio) so program tracks can be compared on how athletes jump, not just how high.
+const REPORT_METRIC_FIELDS = [...GROUP_METRIC_FIELDS, ...CMJ_DETAIL_FIELDS] as const
+
+export type ReportMetricField = (typeof REPORT_METRIC_FIELDS)[number]
 
 export interface AthleteBest {
   athleteId: string
@@ -397,14 +402,45 @@ export interface GroupsMetricsReport {
   series: Record<ReportMetricField, Record<string, number | string | null>[]>
   best: Record<ReportMetricField, AthleteBest[]>
   change: Record<ReportMetricField, AthleteChange[]>
+  // Median athlete % change per metric, for each group id and `all` -- the program summary grid.
+  groupChange: Record<ReportMetricField, Record<string, { median: number; n: number } | null>>
+  // Every CMJ in range that has an impulse ratio, for comparing it against the force metrics.
+  cmjPoints: CmjPoint[]
+  // Athletes per jump strategy at their first and latest CMJ in range, for each group id and `all`.
+  strategy: Record<string, { first: StrategyCounts; latest: StrategyCounts }>
 }
 
-// Weight has no "best" -- the most recent reading in range is what counts.
-const BEST_MODE: Record<ReportMetricField, 'max' | 'latest'> = {
+export interface CmjPoint {
+  athleteId: string
+  name: string
+  date: string
+  impulseRatio: number
+  brakingForce: number | null
+  propForce: number | null
+}
+
+export type StrategyCounts = Record<JumpStrategy, number>
+
+// Weight has no "best" -- the most recent reading in range is what counts. Phase durations are
+// better when shorter. Impulse ratio describes a jump strategy rather than better/worse, so it
+// is tracked like weight.
+const BEST_MODE: Record<ReportMetricField, 'max' | 'min' | 'latest'> = {
   iso_belt_squat_peak_force: 'max',
   top_speed: 'max',
   cmj_height_inches: 'max',
   weight_lbs: 'latest',
+  cmj_peak_rel_prop_power: 'max',
+  cmj_avg_rel_braking_force: 'max',
+  cmj_avg_rel_prop_force: 'max',
+  cmj_impulse_ratio: 'latest',
+  cmj_braking_phase_s: 'min',
+  cmj_propulsive_phase_s: 'min',
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
 export async function getGroupsMetricsReport(data: { groupIds: string[]; startISO: string; endISO: string }) {
@@ -443,7 +479,7 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
       for (let from = 0; ; from += 1000) {
         const { data: page, error } = await supabaseAdmin
           .from('performance_metrics')
-          .select(`athlete_id, test_date, ${GROUP_METRIC_FIELDS.join(', ')}`)
+          .select(`athlete_id, test_date, ${REPORT_METRIC_FIELDS.join(', ')}`)
           .in('athlete_id', chunk)
           .gte('test_date', data.startISO)
           .lte('test_date', data.endISO)
@@ -458,8 +494,12 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
     const series = {} as GroupsMetricsReport['series']
     const best = {} as GroupsMetricsReport['best']
     const change = {} as GroupsMetricsReport['change']
+    const groupChange = {} as GroupsMetricsReport['groupChange']
+    const inGroup = (athleteId: string, key: string) => key === 'all' || !!groupsByAthlete.get(athleteId)?.includes(key)
+    const groupKeys = ['all', ...groups.map((g) => g.id)]
 
-    for (const field of GROUP_METRIC_FIELDS) {
+    for (const field of REPORT_METRIC_FIELDS) {
+      const mode = BEST_MODE[field]
       // Each athlete's readings for this metric, oldest first.
       const byAthlete = new Map<string, { date: string; value: number }[]>()
       for (const r of rows) {
@@ -494,22 +534,30 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
         .map(([athleteId, points]) => ({
           athleteId,
           name: names.get(athleteId) || 'Unknown',
-          value: BEST_MODE[field] === 'max' ? Math.max(...points.map((p) => p.value)) : points[points.length - 1].value,
+          value:
+            mode === 'max'
+              ? Math.max(...points.map((p) => p.value))
+              : mode === 'min'
+                ? Math.min(...points.map((p) => p.value))
+                : points[points.length - 1].value,
         }))
-        .sort((a, b) => b.value - a.value)
+        // Best first: highest, or shortest for phase durations.
+        .sort((a, b) => (mode === 'min' ? a.value - b.value : b.value - a.value))
 
       // % change from the first reading in range to the best reading after it (so an athlete
-      // only shows a decline if every later test was below their first). Weight has no "best",
-      // so it compares first to most recent. Needs two different test days.
+      // only shows a decline if every later test was worse than their first). Weight and impulse
+      // ratio have no "best", so they compare first to most recent. Needs two different test days.
       change[field] = [...byAthlete.entries()]
         .filter(([, points]) => points.length >= 2 && points[0].date !== points[points.length - 1].date && points[0].value !== 0)
         .map(([athleteId, points]) => {
           const first = points[0]
           const later = points.slice(1)
           const compare =
-            BEST_MODE[field] === 'max'
+            mode === 'max'
               ? later.reduce((best, p) => (p.value > best.value ? p : best))
-              : later[later.length - 1]
+              : mode === 'min'
+                ? later.reduce((best, p) => (p.value < best.value ? p : best))
+                : later[later.length - 1]
           return {
             athleteId,
             name: names.get(athleteId) || 'Unknown',
@@ -520,7 +568,45 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
             pct: ((compare.value - first.value) / first.value) * 100,
           }
         })
-        .sort((a, b) => b.pct - a.pct)
+        // Most improved first (biggest drop for phase durations).
+        .sort((a, b) => (mode === 'min' ? a.pct - b.pct : b.pct - a.pct))
+
+      groupChange[field] = Object.fromEntries(
+        groupKeys.map((key) => {
+          const pcts = change[field].filter((c) => inGroup(c.athleteId, key)).map((c) => c.pct)
+          return [key, pcts.length ? { median: median(pcts), n: pcts.length } : null]
+        })
+      )
+    }
+
+    const cmjPoints: CmjPoint[] = rows
+      .filter((r) => r.cmj_impulse_ratio !== null && r.cmj_impulse_ratio !== undefined)
+      .map((r) => ({
+        athleteId: r.athlete_id,
+        name: names.get(r.athlete_id) || 'Unknown',
+        date: r.test_date,
+        impulseRatio: Number(r.cmj_impulse_ratio),
+        brakingForce: r.cmj_avg_rel_braking_force == null ? null : Number(r.cmj_avg_rel_braking_force),
+        propForce: r.cmj_avg_rel_prop_force == null ? null : Number(r.cmj_avg_rel_prop_force),
+      }))
+
+    // Rows are oldest first, so each athlete's first point is their first CMJ in range.
+    const firstLatest = new Map<string, { first: JumpStrategy; latest: JumpStrategy }>()
+    for (const p of cmjPoints) {
+      const s = jumpStrategy(p.impulseRatio)
+      const prev = firstLatest.get(p.athleteId)
+      firstLatest.set(p.athleteId, { first: prev ? prev.first : s, latest: s })
+    }
+    const zeroCounts = (): StrategyCounts => ({ braking: 0, balanced: 0, propulsive: 0 })
+    const strategy: GroupsMetricsReport['strategy'] = {}
+    for (const key of groupKeys) {
+      const entry = { first: zeroCounts(), latest: zeroCounts() }
+      for (const [athleteId, s] of firstLatest) {
+        if (!inGroup(athleteId, key)) continue
+        entry.first[s.first] += 1
+        entry.latest[s.latest] += 1
+      }
+      strategy[key] = entry
     }
 
     const memberCounts = new Map<string, number>()
@@ -532,6 +618,9 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
       series,
       best,
       change,
+      groupChange,
+      cmjPoints,
+      strategy,
     }
     return { success: true, report }
   } catch (err: any) {

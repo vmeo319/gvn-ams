@@ -24,6 +24,39 @@ function firstNamesMatch(a: string, b: string): boolean {
   return !!groupA && groupA.has(b)
 }
 
+// CMJ force-plate detail stored alongside jump height, keyed by Hawkins' metric name with the
+// trailing unit and punctuation stripped ("Avg. Relative Braking Force(%)" -> "avgrelativebrakingforce")
+// so small spacing/punctuation differences between payload versions still match.
+const CMJ_DETAIL_FIELDS = {
+  cmj_peak_rel_prop_power: 'peakrelativepropulsivepower',
+  cmj_avg_rel_braking_force: 'avgrelativebrakingforce',
+  cmj_avg_rel_prop_force: 'avgrelativepropulsiveforce',
+  cmj_impulse_ratio: 'impulseratio',
+  cmj_braking_phase_s: 'brakingphase',
+  cmj_propulsive_phase_s: 'propulsivephase',
+} as const
+type CmjDetailColumn = keyof typeof CMJ_DETAIL_FIELDS
+type CmjDetail = Record<CmjDetailColumn, number | null>
+
+// A bare "%" outside the unit parentheses is a different metric ("Propulsive Phase %" is the
+// phase's share of the jump, not "Propulsive Phase(s)"), so it's kept as "pct".
+function normalizeMetricKey(key: string): string {
+  return key.replace(/\([^)]*\)\s*$/, '').toLowerCase().replace(/%/g, 'pct').replace(/[^a-z0-9]/g, '')
+}
+
+function readCmjDetail(test: Record<string, unknown>): CmjDetail {
+  const byNormalized = new Map<string, unknown>()
+  for (const [k, v] of Object.entries(test)) byNormalized.set(normalizeMetricKey(k), v)
+  const out = {} as CmjDetail
+  for (const [column, key] of Object.entries(CMJ_DETAIL_FIELDS) as [CmjDetailColumn, string][]) {
+    const raw = byNormalized.get(key)
+    const n = raw === null || raw === undefined || raw === '' ? NaN : Number(raw)
+    // Magnitudes only: Hawkins can sign braking force/impulse negative depending on version.
+    out[column] = isFinite(n) && n !== 0 ? Number(Math.abs(n).toFixed(column.endsWith('_s') ? 3 : 2)) : null
+  }
+  return out
+}
+
 Deno.serve(async (req) => {
   try {
     if (!HAWKINS_REFRESH_TOKEN) {
@@ -32,10 +65,14 @@ Deno.serve(async (req) => {
 
     let lookbackDays = 90
     let triggeredBy: 'auto' | 'manual' = 'auto'
+    // Debug: return the metric field names on the most recent CMJ in the window instead of
+    // writing anything, to confirm what Hawkins actually calls each metric.
+    let listCmjFields = false
     try {
       const body = await req.json()
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
+      if (body?.listCmjFields === true) listCmjFields = true
     } catch (_) {
       // Body empty or not JSON — default to 90 days for the steady-state nightly sync.
     }
@@ -65,6 +102,23 @@ Deno.serve(async (req) => {
       hawkinsData.tests ||
       (Array.isArray(hawkinsData) ? hawkinsData : [])
 
+    if (listCmjFields) {
+      const cmj = [...tests]
+        .reverse()
+        .find((t: any) => String(t?.testType?.name ?? t?.test_type ?? '').trim().toLowerCase() === 'countermovement jump')
+      return new Response(
+        JSON.stringify({
+          fetchedHawkinsTests: tests.length,
+          fields: cmj ? Object.keys(cmj) : [],
+          parsedDetail: cmj ? readCmjDetail(cmj) : null,
+          netImpulses: cmj
+            ? { propulsive: cmj['Propulsive Net Impulse(N.s)'], braking: cmj['Braking Net Impulse(N.s)'], ratio: cmj['Impulse Ratio'] }
+            : null,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
     // 3. Load profiles
     const { data: allProfiles } = await supabase
       .from('profiles')
@@ -90,7 +144,7 @@ Deno.serve(async (req) => {
     // each metric in its own map (and later its own upsert, with only that metric's
     // column) guarantees a sync can only ever write a column it has real data for.
     const bestIsoBySession = new Map<string, { athleteId: string; testDate: string; value: number }>()
-    const bestCmjBySession = new Map<string, { athleteId: string; testDate: string; value: number }>()
+    const bestCmjBySession = new Map<string, { athleteId: string; testDate: string; value: number; detail: CmjDetail }>()
 
     let matchedTestsCount = 0
 
@@ -273,7 +327,7 @@ Deno.serve(async (req) => {
         const value = Number(cmjHeightVal.toFixed(2))
         const existing = bestCmjBySession.get(sessionKey)
         if (!existing || value > existing.value) {
-          bestCmjBySession.set(sessionKey, { athleteId: athleteRecord.id, testDate, value })
+          bestCmjBySession.set(sessionKey, { athleteId: athleteRecord.id, testDate, value, detail: readCmjDetail(test) })
         }
       }
     }
@@ -287,6 +341,7 @@ Deno.serve(async (req) => {
       athlete_id: r.athleteId,
       test_date: r.testDate,
       cmj_height_inches: r.value,
+      ...r.detail,
     }))
     const weightRows = Array.from(weightByDate.entries()).map(([sessionKey, w]) => {
       const [athleteId, testDate] = sessionKey.split('_')

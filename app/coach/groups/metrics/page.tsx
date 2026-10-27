@@ -3,16 +3,37 @@
 import React, { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts'
-import { ArrowLeft, Check, ChevronDown, TrendingUp, TrendingDown, Trophy } from 'lucide-react'
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Legend,
+  ReferenceLine,
+  ScatterChart,
+  Scatter,
+} from 'recharts'
+import { ArrowLeft, Check, ChevronDown, TrendingUp, TrendingDown, Trophy, Minus } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
-import { METRIC_INFO, MetricKey, formatTickDate } from '@/app/components/metricInfo'
+import {
+  METRIC_INFO,
+  MetricKey,
+  CMJ_DETAIL_FIELDS,
+  CMJ_DETAIL_INFO,
+  IMPULSE_RATIO_CUTOFFS,
+  JumpStrategy,
+  formatTickDate,
+} from '@/app/components/metricInfo'
 import {
   listGroupsWithCounts,
   getGroupsMetricsReport,
   GroupsMetricsReport,
   AthleteBest,
   AthleteChange,
+  CmjPoint,
   ReportMetricField,
 } from '../actions'
 
@@ -62,7 +83,48 @@ function presetRange(preset: RangePreset): { start: string; end: string } {
   }
 }
 
-const METRIC_KEYS = Object.keys(METRIC_INFO) as MetricKey[]
+interface SectionDef {
+  field: ReportMetricField
+  name: string
+  unit: string
+  color: string
+  decimals: number
+  better: 'higher' | 'lower' | 'neutral'
+}
+
+const CORE_SECTIONS: SectionDef[] = (Object.keys(METRIC_INFO) as MetricKey[]).map((key) => {
+  const info = METRIC_INFO[key]
+  return { ...info, field: info.field as ReportMetricField, better: key === 'weight' ? 'neutral' : 'higher' }
+})
+const CMJ_SECTIONS: SectionDef[] = CMJ_DETAIL_FIELDS.map((field) => ({ field, ...CMJ_DETAIL_INFO[field] }))
+const SECTION_BY_FIELD = new Map([...CORE_SECTIONS, ...CMJ_SECTIONS].map((d) => [d.field, d]))
+
+// Program summary columns: the performance KPIs that have a better direction.
+const SUMMARY_FIELDS: ReportMetricField[] = [
+  'cmj_height_inches',
+  'cmj_peak_rel_prop_power',
+  'cmj_avg_rel_braking_force',
+  'cmj_avg_rel_prop_force',
+  'cmj_braking_phase_s',
+  'cmj_propulsive_phase_s',
+  'iso_belt_squat_peak_force',
+  'top_speed',
+]
+
+// Diverging pair with a neutral midpoint: braking and propulsive are the two poles of the
+// impulse ratio, balanced sits between.
+const STRATEGY_STYLE: Record<JumpStrategy, { label: string; color: string; range: string }> = {
+  braking: { label: 'Braking', color: '#d95926', range: `< ${IMPULSE_RATIO_CUTOFFS.braking}` },
+  balanced: { label: 'Balanced', color: '#94a3b8', range: `${IMPULSE_RATIO_CUTOFFS.braking}–${IMPULSE_RATIO_CUTOFFS.propulsive}` },
+  propulsive: { label: 'Propulsive', color: '#3987e5', range: `> ${IMPULSE_RATIO_CUTOFFS.propulsive}` },
+}
+
+const shortName = (name: string) => name.replace(/ \(.*\)$/, '')
+
+const groupRows = (report: GroupsMetricsReport, groupColor: (groupId: string) => string | null) => [
+  ...report.groups.map((g) => ({ key: g.id, label: `${g.name} · ${g.locationName.replace('GVN- ', '')}`, color: groupColor(g.id) })),
+  ...(report.groups.length > 1 ? [{ key: 'all', label: 'All selected', color: null }] : []),
+]
 
 export default function GroupMetricsPage() {
   return (
@@ -162,7 +224,7 @@ function GroupMetricsReport() {
   ]
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-6 w-full max-w-7xl mx-auto space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight uppercase">Group Metrics</h1>
@@ -283,8 +345,14 @@ function GroupMetricsReport() {
 
       {report && selectedIds.length > 0 && (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`}>
-          {METRIC_KEYS.map((key) => (
-            <MetricSection key={key} metricKey={key} report={report} groupColor={groupColor} />
+          <ProgramSummary report={report} groupColor={groupColor} />
+          <JumpStrategySection report={report} groupColor={groupColor} />
+          {CORE_SECTIONS.map((def) => (
+            <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
+          ))}
+          <h2 className="text-lg font-bold uppercase tracking-tight pt-2">CMJ force-plate detail</h2>
+          {CMJ_SECTIONS.map((def) => (
+            <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
           ))}
         </div>
       )}
@@ -293,20 +361,20 @@ function GroupMetricsReport() {
 }
 
 function MetricSection({
-  metricKey,
+  def: info,
   report,
   groupColor,
 }: {
-  metricKey: MetricKey
+  def: SectionDef
   report: GroupsMetricsReport
   groupColor: (groupId: string) => string | null
 }) {
-  const info = METRIC_INFO[metricKey]
-  const field = info.field as ReportMetricField
+  const field = info.field
   const data = report.series[field]
   const best = report.best[field]
   const change = report.change[field]
-  const isWeight = metricKey === 'weight'
+  const neutral = info.better === 'neutral'
+  const unitSuffix = info.unit ? ` ${info.unit}` : ''
   const multi = report.groups.length > 1
   const perGroupLines = multi ? report.groups.filter((g) => groupColor(g.id)) : []
 
@@ -318,7 +386,7 @@ function MetricSection({
         <div>
           <div className="text-sm font-medium text-slate-400">{info.name} — group weekly average</div>
           <div className="text-2xl font-bold mt-0.5 text-white">
-            {latestAll !== undefined ? `${latestAll.toFixed(info.decimals)} ${info.unit}` : '--'}
+            {latestAll !== undefined ? `${latestAll.toFixed(info.decimals)}${unitSuffix}` : '--'}
             <span className="text-xs font-normal text-slate-500 ml-2">latest week</span>
           </div>
         </div>
@@ -348,9 +416,15 @@ function MetricSection({
                 <YAxis stroke="#94a3b8" domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={46} />
                 <Tooltip
                   labelFormatter={(l) => `Week of ${formatTickDate(l)}`}
-                  formatter={(v) => (typeof v === 'number' ? `${v.toFixed(info.decimals)} ${info.unit}` : '--')}
+                  formatter={(v) => (typeof v === 'number' ? `${v.toFixed(info.decimals)}${unitSuffix}` : '--')}
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }}
                 />
+                {field === 'cmj_impulse_ratio' && (
+                  <>
+                    <ReferenceLine y={IMPULSE_RATIO_CUTOFFS.braking} stroke={STRATEGY_STYLE.braking.color} strokeDasharray="4 4" />
+                    <ReferenceLine y={IMPULSE_RATIO_CUTOFFS.propulsive} stroke={STRATEGY_STYLE.propulsive.color} strokeDasharray="4 4" />
+                  </>
+                )}
                 {perGroupLines.length > 0 && <Legend wrapperStyle={{ fontSize: 11 }} />}
                 {perGroupLines.length > 0 ? (
                   <>
@@ -395,18 +469,18 @@ function MetricSection({
 
         <div className="xl:col-span-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-4">
           <RankingTable
-            title={isWeight ? 'Current weight' : `Best ${info.name.replace(/ \(.*\)$/, '')}`}
-            topLabel={isWeight ? 'Heaviest' : 'Top 3'}
-            bottomLabel={isWeight ? 'Lightest' : 'Bottom 3'}
-            neutral={isWeight}
+            title={neutral ? `Latest ${shortName(info.name)}` : `Best ${shortName(info.name)}`}
+            topLabel={neutral ? 'Highest' : 'Top 3'}
+            bottomLabel={neutral ? 'Lowest' : 'Bottom 3'}
+            neutral={neutral}
             rows={best}
-            render={(r: AthleteBest) => `${r.value.toFixed(info.decimals)} ${info.unit}`}
+            render={(r: AthleteBest) => `${r.value.toFixed(info.decimals)}${unitSuffix}`}
           />
           <RankingTable
-            title={isWeight ? '% change (first → latest)' : '% change (first → best after)'}
-            topLabel={isWeight ? 'Biggest gain' : 'Most improved'}
-            bottomLabel={isWeight ? 'Biggest loss' : 'Most declined'}
-            neutral={isWeight}
+            title={neutral ? '% change (first → latest)' : '% change (first → best after)'}
+            topLabel={neutral ? 'Biggest increase' : 'Most improved'}
+            bottomLabel={neutral ? 'Biggest decrease' : 'Most declined'}
+            neutral={neutral}
             rows={change}
             render={(r: AthleteChange) => `${r.pct >= 0 ? '+' : ''}${r.pct.toFixed(1)}%`}
             detail={(r: AthleteChange) =>
@@ -482,6 +556,247 @@ function RankingTable<T extends { athleteId: string; name: string }>({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// One row per group: the median athlete's % change on each KPI over the range. Answers "which
+// program moved which quality" at a glance; the per-metric sections below show the detail.
+function ProgramSummary({
+  report,
+  groupColor,
+}: {
+  report: GroupsMetricsReport
+  groupColor: (groupId: string) => string | null
+}) {
+  return (
+    <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-3">
+      <div>
+        <div className="text-sm font-medium text-slate-300">Program summary — median athlete % change</div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          First test in range → best test after it (shortest for phase durations). Count is athletes with 2+ test days.
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-slate-400 text-left">
+              <th className="font-semibold py-2 pr-3">Group</th>
+              {SUMMARY_FIELDS.map((f) => (
+                <th key={f} className="font-semibold py-2 px-2 text-right whitespace-nowrap">
+                  {shortName(SECTION_BY_FIELD.get(f)!.name)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groupRows(report, groupColor).map((row) => (
+              <tr key={row.key} className="border-t border-slate-800">
+                <td className="py-2 pr-3 text-slate-200 whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1.5">
+                    {row.color && <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: row.color }} />}
+                    {row.label}
+                  </span>
+                </td>
+                {SUMMARY_FIELDS.map((f) => {
+                  const cell = report.groupChange[f]?.[row.key]
+                  if (!cell) {
+                    return (
+                      <td key={f} className="py-2 px-2 text-right text-slate-600">
+                        --
+                      </td>
+                    )
+                  }
+                  // Arrow follows the number's sign; color says whether that's an improvement
+                  // (a drop is good for phase durations).
+                  const improved = SECTION_BY_FIELD.get(f)!.better === 'lower' ? cell.median < 0 : cell.median > 0
+                  const flat = Math.abs(cell.median) < 0.05
+                  const Icon = flat ? Minus : cell.median > 0 ? TrendingUp : TrendingDown
+                  return (
+                    <td key={f} className="py-2 px-2 text-right whitespace-nowrap">
+                      <span
+                        className={`inline-flex items-center gap-1 font-semibold tabular-nums ${
+                          flat ? 'text-slate-400' : improved ? 'text-emerald-400' : 'text-red-400'
+                        }`}
+                      >
+                        <Icon className="w-3 h-3" />
+                        {cell.median >= 0 ? '+' : ''}
+                        {cell.median.toFixed(1)}%
+                      </span>
+                      <span className="text-slate-500 ml-1">({cell.n})</span>
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function pearson(points: { x: number; y: number }[]): number | null {
+  const n = points.length
+  if (n < 3) return null
+  const mx = points.reduce((a, p) => a + p.x, 0) / n
+  const my = points.reduce((a, p) => a + p.y, 0) / n
+  let sxy = 0
+  let sxx = 0
+  let syy = 0
+  for (const p of points) {
+    sxy += (p.x - mx) * (p.y - my)
+    sxx += (p.x - mx) ** 2
+    syy += (p.y - my) ** 2
+  }
+  return sxx && syy ? sxy / Math.sqrt(sxx * syy) : null
+}
+
+function strengthLabel(r: number): string {
+  const a = Math.abs(r)
+  if (a < 0.2) return 'no clear relationship'
+  const strength = a >= 0.7 ? 'strong' : a >= 0.4 ? 'moderate' : 'weak'
+  return `${strength} ${r > 0 ? 'positive' : 'negative'} relationship`
+}
+
+const JUMP_STRATEGIES: JumpStrategy[] = ['braking', 'balanced', 'propulsive']
+
+const FORCE_VS_RATIO: { title: string; unit: string; decimals: number; y: (p: CmjPoint) => number | null }[] = [
+  { title: 'Avg Rel. Braking Force', unit: '% BW', decimals: 1, y: (p) => p.brakingForce },
+  { title: 'Avg Rel. Propulsive Force', unit: '% BW', decimals: 1, y: (p) => p.propForce },
+  {
+    title: 'Propulsive ÷ Braking Force',
+    unit: '',
+    decimals: 2,
+    y: (p) => (p.brakingForce && p.propForce ? p.propForce / p.brakingForce : null),
+  },
+]
+
+// How closely the average braking/propulsive forces line up with the impulse ratio athletes are
+// categorized by, plus how many athletes in each group moved between strategies over the range.
+function JumpStrategySection({
+  report,
+  groupColor,
+}: {
+  report: GroupsMetricsReport
+  groupColor: (groupId: string) => string | null
+}) {
+  return (
+    <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-4">
+      <div>
+        <div className="text-sm font-medium text-slate-300">Jump strategy — impulse ratio vs. CMJ forces</div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          Each dot is one athlete&apos;s best CMJ on a test day ({report.cmjPoints.length} jumps). Dashed lines are the
+          strategy cutoffs: braking {STRATEGY_STYLE.braking.range}, balanced {STRATEGY_STYLE.balanced.range}, propulsive{' '}
+          {STRATEGY_STYLE.propulsive.range}. r is the correlation (±1 = moves together perfectly, 0 = unrelated).
+        </div>
+      </div>
+
+      {report.cmjPoints.length === 0 ? (
+        <div className="py-8 text-center text-sm text-slate-500">No impulse ratio data in this range.</div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {FORCE_VS_RATIO.map((c) => {
+            const pts = report.cmjPoints
+              .map((p) => ({ x: p.impulseRatio, y: c.y(p), name: p.name, date: p.date }))
+              .filter((p): p is { x: number; y: number; name: string; date: string } => p.y !== null)
+            const r = pearson(pts)
+            return (
+              <div key={c.title} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                <div className="text-xs font-semibold text-slate-300">
+                  {c.title}
+                  {c.unit ? ` (${c.unit})` : ''}
+                </div>
+                <div className="text-[11px] text-slate-400 mb-2">
+                  {r === null ? 'Not enough data' : `r = ${r.toFixed(2)} · ${strengthLabel(r)}`}
+                </div>
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart margin={{ top: 5, right: 10, bottom: 20, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        domain={['auto', 'auto']}
+                        stroke="#94a3b8"
+                        tick={{ fontSize: 10 }}
+                        label={{ value: 'Impulse ratio', position: 'insideBottom', offset: -10, fill: '#94a3b8', fontSize: 10 }}
+                      />
+                      <YAxis type="number" dataKey="y" domain={['auto', 'auto']} stroke="#94a3b8" tick={{ fontSize: 10 }} width={44} />
+                      <ReferenceLine x={IMPULSE_RATIO_CUTOFFS.braking} stroke={STRATEGY_STYLE.braking.color} strokeDasharray="4 4" />
+                      <ReferenceLine x={IMPULSE_RATIO_CUTOFFS.propulsive} stroke={STRATEGY_STYLE.propulsive.color} strokeDasharray="4 4" />
+                      <Tooltip
+                        cursor={{ strokeDasharray: '3 3' }}
+                        content={({ active, payload }) => {
+                          const p = active ? payload?.[0]?.payload : null
+                          if (!p) return null
+                          return (
+                            <div className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] text-slate-200">
+                              <div className="font-semibold">{p.name}</div>
+                              <div className="text-slate-400">{formatTickDate(p.date)}</div>
+                              <div>Impulse ratio {p.x.toFixed(2)}</div>
+                              <div>
+                                {c.title} {p.y.toFixed(c.decimals)}
+                                {c.unit ? ` ${c.unit}` : ''}
+                              </div>
+                            </div>
+                          )
+                        }}
+                      />
+                      <Scatter data={pts} fill="#3987e5" fillOpacity={0.5} />
+                    </ScatterChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <div className="text-xs font-semibold text-slate-300 mb-1">Athletes per strategy — first CMJ in range → latest</div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-slate-400 text-left">
+              <th className="font-semibold py-2 pr-3">Group</th>
+              {JUMP_STRATEGIES.map((s) => (
+                <th key={s} className="font-semibold py-2 px-2 text-right whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: STRATEGY_STYLE[s].color }} />
+                    {STRATEGY_STYLE[s].label} ({STRATEGY_STYLE[s].range})
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groupRows(report, groupColor).map((row) => {
+              const entry = report.strategy[row.key]
+              return (
+                <tr key={row.key} className="border-t border-slate-800">
+                  <td className="py-2 pr-3 text-slate-200 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5">
+                      {row.color && <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: row.color }} />}
+                      {row.label}
+                    </span>
+                  </td>
+                  {JUMP_STRATEGIES.map((s) => (
+                    <td key={s} className="py-2 px-2 text-right tabular-nums text-slate-300">
+                      {entry ? (
+                        <>
+                          {entry.first[s]} → <span className="font-semibold text-white">{entry.latest[s]}</span>
+                        </>
+                      ) : (
+                        '--'
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
