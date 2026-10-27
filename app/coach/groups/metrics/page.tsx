@@ -83,6 +83,32 @@ function presetRange(preset: RangePreset): { start: string; end: string } {
   }
 }
 
+type AgeBand = 'all' | 'u14' | '15-17' | '18-20' | '21+' | 'custom'
+
+// Age as of this calendar year, expressed as the birth-year range the report filters on.
+function ageBandRange(band: AgeBand): { min: number | null; max: number | null } {
+  const y = new Date().getFullYear()
+  switch (band) {
+    case 'u14': return { min: y - 14, max: null }
+    case '15-17': return { min: y - 17, max: y - 15 }
+    case '18-20': return { min: y - 20, max: y - 18 }
+    case '21+': return { min: null, max: y - 21 }
+    default: return { min: null, max: null }
+  }
+}
+
+function ageBandLabel(band: AgeBand): string {
+  const { min, max } = ageBandRange(band)
+  switch (band) {
+    case 'u14': return `14 & under (${min}+)`
+    case '15-17': return `15–17 (${min}–${max})`
+    case '18-20': return `18–20 (${min}–${max})`
+    case '21+': return `21+ (${max} & older)`
+    case 'custom': return 'Custom'
+    default: return 'All ages'
+  }
+}
+
 interface SectionDef {
   field: ReportMetricField
   name: string
@@ -148,11 +174,17 @@ function GroupMetricsReport() {
   const [preset, setPreset] = useState<RangePreset>('90d')
   const [customStart, setCustomStart] = useState(presetRange('90d').start)
   const [customEnd, setCustomEnd] = useState(toISO(new Date()))
+  const [ageBand, setAgeBand] = useState<AgeBand>('all')
+  const [customBirthMin, setCustomBirthMin] = useState('')
+  const [customBirthMax, setCustomBirthMax] = useState('')
   const [report, setReport] = useState<GroupsMetricsReport | null>(null)
   const [loadedKey, setLoadedKey] = useState('')
   const [error, setError] = useState('')
 
   const range = preset === 'custom' ? { start: customStart, end: customEnd } : presetRange(preset)
+  const parseYear = (v: string) => (/^\d{4}$/.test(v.trim()) ? Number(v) : null)
+  const birthRange =
+    ageBand === 'custom' ? { min: parseYear(customBirthMin), max: parseYear(customBirthMax) } : ageBandRange(ageBand)
 
   useEffect(() => {
     async function init() {
@@ -177,13 +209,19 @@ function GroupMetricsReport() {
   // toggled, and a response for superseded inputs is dropped, so quick filter changes can't
   // paint an older report over a newer one.
   const idsKey = selectedIds.join(',')
-  const requestKey = `${idsKey}|${range.start}|${range.end}`
+  const requestKey = `${idsKey}|${range.start}|${range.end}|${birthRange.min}|${birthRange.max}`
   const loading = idsKey !== '' && loadedKey !== requestKey
 
   useEffect(() => {
     if (!authorized || !idsKey || !range.start || !range.end) return
     let cancelled = false
-    getGroupsMetricsReport({ groupIds: idsKey.split(','), startISO: range.start, endISO: range.end }).then((res) => {
+    getGroupsMetricsReport({
+      groupIds: idsKey.split(','),
+      startISO: range.start,
+      endISO: range.end,
+      birthYearMin: birthRange.min,
+      birthYearMax: birthRange.max,
+    }).then((res) => {
       if (cancelled) return
       setLoadedKey(requestKey)
       if (res.success && res.report) {
@@ -196,7 +234,7 @@ function GroupMetricsReport() {
     return () => {
       cancelled = true
     }
-  }, [authorized, idsKey, range.start, range.end, requestKey])
+  }, [authorized, idsKey, range.start, range.end, birthRange.min, birthRange.max, requestKey])
 
   // Selection lives in the URL so the page can be bookmarked/shared and survives a refresh.
   function toggleGroup(id: string) {
@@ -310,6 +348,46 @@ function GroupMetricsReport() {
               className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white [color-scheme:dark]"
             />
           </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Age</span>
+        <div className="flex flex-wrap items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
+          {(['all', 'u14', '15-17', '18-20', '21+', 'custom'] as AgeBand[]).map((band) => (
+            <button
+              key={band}
+              onClick={() => setAgeBand(band)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+                ageBand === band ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              {ageBandLabel(band)}
+            </button>
+          ))}
+        </div>
+        {ageBand === 'custom' && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-slate-500">Born</span>
+            <input
+              inputMode="numeric"
+              placeholder="from"
+              value={customBirthMin}
+              onChange={(e) => setCustomBirthMin(e.target.value)}
+              className="w-20 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white"
+            />
+            <span className="text-slate-500">to</span>
+            <input
+              inputMode="numeric"
+              placeholder="to"
+              value={customBirthMax}
+              onChange={(e) => setCustomBirthMax(e.target.value)}
+              className="w-20 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white"
+            />
+          </div>
+        )}
+        {ageBand !== 'all' && (
+          <span className="text-xs text-slate-500">Athletes without a birth year are left out.</span>
         )}
       </div>
 

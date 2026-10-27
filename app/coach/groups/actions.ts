@@ -443,7 +443,15 @@ function median(values: number[]): number {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
-export async function getGroupsMetricsReport(data: { groupIds: string[]; startISO: string; endISO: string }) {
+// birthYearMin/Max (inclusive, either optional) narrow the report to athletes born in that range,
+// e.g. one level's results within an age band. Athletes with no birth year drop out when set.
+export async function getGroupsMetricsReport(data: {
+  groupIds: string[]
+  startISO: string
+  endISO: string
+  birthYearMin?: number | null
+  birthYearMax?: number | null
+}) {
   try {
     if (data.groupIds.length === 0) return { success: false, error: 'Select at least one group.' }
 
@@ -466,15 +474,26 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
       groupsByAthlete.get(r.athlete_id)!.push(r.group_id)
     }
     const athleteIds = [...groupsByAthlete.keys()]
+    const filterByAge = data.birthYearMin != null || data.birthYearMax != null
+    const inAgeRange = (birthYear: number | null) =>
+      !filterByAge ||
+      (birthYear != null &&
+        (data.birthYearMin == null || birthYear >= data.birthYearMin) &&
+        (data.birthYearMax == null || birthYear <= data.birthYearMax))
 
     const names = new Map<string, string>()
     const rows: { athlete_id: string; test_date: string; [k: string]: number | string | null }[] = []
     // Chunked by athlete (keeps the id list out of URL-length trouble) and paged (PostgREST
     // caps a response at 1000 rows).
     for (let i = 0; i < athleteIds.length; i += 100) {
-      const chunk = athleteIds.slice(i, i + 100)
-      const { data: profiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name').in('id', chunk)
-      for (const p of profiles || []) names.set(p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim())
+      const { data: profiles } = await supabaseAdmin
+        .from('profiles')
+        .select('id, first_name, last_name, birth_year')
+        .in('id', athleteIds.slice(i, i + 100))
+      const kept = (profiles || []).filter((p) => inAgeRange(p.birth_year))
+      for (const p of kept) names.set(p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim())
+      const chunk = kept.map((p) => p.id)
+      if (chunk.length === 0) continue
 
       for (let from = 0; ; from += 1000) {
         const { data: page, error } = await supabaseAdmin
@@ -609,12 +628,15 @@ export async function getGroupsMetricsReport(data: { groupIds: string[]; startIS
       strategy[key] = entry
     }
 
+    // `names` holds exactly the athletes that passed the age filter.
     const memberCounts = new Map<string, number>()
-    for (const r of memberRows || []) memberCounts.set(r.group_id, (memberCounts.get(r.group_id) || 0) + 1)
+    for (const r of memberRows || []) {
+      if (names.has(r.athlete_id)) memberCounts.set(r.group_id, (memberCounts.get(r.group_id) || 0) + 1)
+    }
 
     const report: GroupsMetricsReport = {
       groups: groups.map((g) => ({ id: g.id, name: g.name, locationName: g.locationName, memberCount: memberCounts.get(g.id) || 0 })),
-      athleteCount: athleteIds.length,
+      athleteCount: names.size,
       series,
       best,
       change,
