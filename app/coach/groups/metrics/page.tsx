@@ -18,6 +18,8 @@ import {
 } from 'recharts'
 import { ArrowLeft, Check, ChevronDown, TrendingUp, TrendingDown, Trophy, Minus } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
+import { RangePreset, presetRange, toISO } from '@/lib/dateRanges'
+import DateRangeFilter from '@/app/components/DateRangeFilter'
 import {
   METRIC_INFO,
   MetricKey,
@@ -48,41 +50,6 @@ interface GroupOption {
 // against the app's #0f172a chart surface. Colors follow the group's position in the
 // selection, capped at 8 -- past that the chart shows only the combined average.
 const GROUP_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767']
-
-type RangePreset = '30d' | '90d' | '6m' | '12m' | 'summer' | 'all' | 'custom'
-
-const toISO = (d: Date) => {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-// GVN's summer training block: Jun 1 - Aug 14 of the current year once June has started,
-// otherwise last year's.
-function summerRange(): { start: string; end: string; label: string } {
-  const now = new Date()
-  const year = now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1
-  return { start: `${year}-06-01`, end: `${year}-08-14`, label: `Summer ${year}` }
-}
-
-function presetRange(preset: RangePreset): { start: string; end: string } {
-  const today = new Date()
-  const back = (days: number) => {
-    const d = new Date(today)
-    d.setDate(d.getDate() - days)
-    return toISO(d)
-  }
-  switch (preset) {
-    case '30d': return { start: back(30), end: toISO(today) }
-    case '90d': return { start: back(90), end: toISO(today) }
-    case '6m': return { start: back(182), end: toISO(today) }
-    case '12m': return { start: back(365), end: toISO(today) }
-    case 'summer': return summerRange()
-    case 'all': return { start: '2000-01-01', end: toISO(today) }
-    default: return { start: back(90), end: toISO(today) }
-  }
-}
 
 type AgeBand = 'all' | 'u14' | '15-17' | '18-20' | '21+' | 'custom'
 
@@ -287,16 +254,6 @@ function GroupMetricsReport() {
     return idx >= 0 && idx < GROUP_COLORS.length ? GROUP_COLORS[idx] : null
   }
 
-  const presets: { key: RangePreset; label: string }[] = [
-    { key: '30d', label: '30 days' },
-    { key: '90d', label: '90 days' },
-    { key: 'summer', label: summerRange().label },
-    { key: '6m', label: '6 months' },
-    { key: '12m', label: '12 months' },
-    { key: 'all', label: 'All time' },
-    { key: 'custom', label: 'Custom' },
-  ]
-
   return (
     <div className="p-6 w-full max-w-7xl mx-auto space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -397,39 +354,14 @@ function GroupMetricsReport() {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
-          {presets.map((p) => (
-            <button
-              key={p.key}
-              onClick={() => setPreset(p.key)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-                preset === p.key ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        {preset === 'custom' && (
-          <div className="flex items-center gap-2 text-sm">
-            <input
-              type="date"
-              value={customStart}
-              max={customEnd}
-              onChange={(e) => setCustomStart(e.target.value)}
-              className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white [color-scheme:dark]"
-            />
-            <span className="text-slate-500">to</span>
-            <input
-              type="date"
-              value={customEnd}
-              min={customStart}
-              onChange={(e) => setCustomEnd(e.target.value)}
-              className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-white [color-scheme:dark]"
-            />
-          </div>
-        )}
+        <DateRangeFilter
+          preset={preset}
+          onPreset={setPreset}
+          customStart={customStart}
+          customEnd={customEnd}
+          onCustomStart={setCustomStart}
+          onCustomEnd={setCustomEnd}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -564,7 +496,7 @@ function MetricSection({
                 <XAxis
                   dataKey="test_date"
                   stroke="#94a3b8"
-                  tickFormatter={formatTickDate}
+                  tickFormatter={(v) => formatTickDate(v)}
                   angle={-40}
                   textAnchor="end"
                   height={45}

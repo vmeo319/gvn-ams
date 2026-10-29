@@ -16,13 +16,22 @@ export default function TrendBadge({
   metricName,
   metricColor,
   points,
+  lowerIsBetter,
 }: {
   metricName: string
   metricColor: string
   points: { date: string; value: number }[]
+  // For times: a falling value is the improvement.
+  lowerIsBetter?: boolean
 }) {
   const trend = computeTrend(points)
-  const style = STYLES[trend.classification]
+  const classification =
+    lowerIsBetter && trend.classification === 'improving'
+      ? 'declining'
+      : lowerIsBetter && trend.classification === 'declining'
+        ? 'improving'
+        : trend.classification
+  const style = STYLES[classification]
   const Icon = style.icon
 
   const sparklineData = points
@@ -37,7 +46,7 @@ export default function TrendBadge({
           <Icon className="w-4 h-4" style={{ color: style.color }} />
           <span className="text-sm font-semibold" style={{ color: style.color }}>
             {style.label}
-            {trend.lowConfidence && trend.classification !== 'insufficient_data' && (
+            {trend.lowConfidence && classification !== 'insufficient_data' && (
               <span className="text-slate-500 font-normal"> (low confidence)</span>
             )}
           </span>

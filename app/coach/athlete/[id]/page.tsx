@@ -176,6 +176,19 @@ export default function CoachAthleteDetailPage() {
         <TrendBadge metricName={METRIC_INFO.iso.name} metricColor={METRIC_INFO.iso.color} points={pointsFor('iso_belt_squat_peak_force')} />
         <TrendBadge metricName={METRIC_INFO.cmj.name} metricColor={METRIC_INFO.cmj.color} points={pointsFor('cmj_height_inches')} />
         <TrendBadge metricName={METRIC_INFO.top_speed.name} metricColor={METRIC_INFO.top_speed.color} points={pointsFor('top_speed')} />
+        {/* On-ice trends only for athletes who have on-ice testing. */}
+        {pointsFor('on_ice_top_speed').length > 0 && (
+          <>
+            <TrendBadge metricName={METRIC_INFO.on_ice_speed.name} metricColor={METRIC_INFO.on_ice_speed.color} points={pointsFor('on_ice_top_speed')} />
+            <TrendBadge metricName={METRIC_INFO.on_ice_accel.name} metricColor={METRIC_INFO.on_ice_accel.color} points={pointsFor('on_ice_accel_max')} />
+            <TrendBadge
+              metricName={METRIC_INFO.on_ice_15yd.name}
+              metricColor={METRIC_INFO.on_ice_15yd.color}
+              points={pointsFor('on_ice_15yd_time')}
+              lowerIsBetter
+            />
+          </>
+        )}
       </div>
 
       <AttendancePanel athleteId={athleteId} coachId={coachId!} />

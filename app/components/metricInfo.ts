@@ -87,9 +87,14 @@ export function jumpStrategy(impulseRatio: number): JumpStrategy {
   return 'balanced'
 }
 
-export function formatTickDate(dateStr: unknown): string {
+// withYear adds a 2-digit year ("Oct 30 '25") for charts that span more than one year.
+export function formatTickDate(dateStr: unknown, withYear = false): string {
   const str = String(dateStr ?? '')
-  const d = new Date(str)
+  // A bare YYYY-MM-DD parses as UTC midnight, which shows as the previous day in US time
+  // zones, so build it as a local date instead.
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str)
+  const d = ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : new Date(str)
   if (isNaN(d.getTime())) return str
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return withYear ? `${label} '${String(d.getFullYear()).slice(2)}` : label
 }

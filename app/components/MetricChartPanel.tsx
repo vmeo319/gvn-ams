@@ -31,6 +31,11 @@ export default function MetricChartPanel({
       .map((m) => ({ test_date: m.test_date, value: m[info.field] as number }))
   }, [metrics, info.field])
 
+  // Label ticks with the year when the points cover more than one, so "Oct 30" (last year)
+  // followed by "Jul 27" (this year) doesn't read as time running backwards.
+  const spansYears =
+    chartData.length > 1 && chartData[0].test_date.slice(0, 4) !== chartData[chartData.length - 1].test_date.slice(0, 4)
+
   const summaryValue =
     info.summaryMode === 'latest'
       ? latestValue(metrics, info.field)
@@ -80,7 +85,7 @@ export default function MetricChartPanel({
             <XAxis
               dataKey="test_date"
               stroke="#94a3b8"
-              tickFormatter={formatTickDate}
+              tickFormatter={(v) => formatTickDate(v, spansYears)}
               angle={-40}
               textAnchor="end"
               height={45}
@@ -92,7 +97,7 @@ export default function MetricChartPanel({
                 what let axis text spill outside its own chart on some athletes' data. */}
             <YAxis stroke="#94a3b8" domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={46} />
             <Tooltip
-              labelFormatter={formatTickDate}
+              labelFormatter={(v) => formatTickDate(v, true)}
               contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }}
             />
             <Line
