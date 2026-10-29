@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
-import { CMJ_DETAIL_FIELDS, JumpStrategy, jumpStrategy } from '@/app/components/metricInfo'
+import { CMJ_DETAIL_FIELDS, JumpStrategy, jumpStrategy, METRIC_COLUMNS } from '@/app/components/metricInfo'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -66,6 +66,31 @@ export async function listGroupsWithCounts() {
     }
   } catch (err: any) {
     return { success: false, error: formatError(err), results: [] }
+  }
+}
+
+// Location names by id. Looked up separately rather than embedded with locations(name):
+// profiles reach locations both directly and through athlete_locations, which PostgREST
+// refuses to embed as ambiguous.
+async function locationNames(): Promise<Map<string, string>> {
+  const { data } = await supabaseAdmin.from('locations').select('id, name')
+  return new Map((data || []).map((l) => [l.id, l.name]))
+}
+
+// Athletes for the Group Metrics athlete picker, by name.
+export async function listAthletesForCompare() {
+  const [{ data, error }, locs] = await Promise.all([
+    supabaseAdmin.from('profiles').select('id, first_name, last_name, location_id').eq('role', 'athlete').order('first_name'),
+    locationNames(),
+  ])
+  if (error) return { success: false, error: formatError(error), results: [] }
+  return {
+    success: true,
+    results: (data || []).map((p) => ({
+      id: p.id,
+      name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+      locationName: locs.get(p.location_id) || '',
+    })),
   }
 }
 
@@ -292,7 +317,15 @@ function mondayOfUTC(dateISO: string): string {
   return d.toISOString().split('T')[0]
 }
 
-const GROUP_METRIC_FIELDS = ['iso_belt_squat_peak_force', 'top_speed', 'cmj_height_inches', 'weight_lbs'] as const
+const GROUP_METRIC_FIELDS = [
+  'iso_belt_squat_peak_force',
+  'top_speed',
+  'cmj_height_inches',
+  'weight_lbs',
+  'on_ice_top_speed',
+  'on_ice_accel_max',
+  'on_ice_15yd_time',
+] as const
 
 export async function getGroupMetrics(data: { groupId: string }) {
   try {
@@ -305,7 +338,7 @@ export async function getGroupMetrics(data: { groupId: string }) {
 
     const { data: rows, error } = await supabaseAdmin
       .from('performance_metrics')
-      .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+      .select(METRIC_COLUMNS)
       .in('athlete_id', athleteIds)
       .order('test_date', { ascending: true })
     if (error) return { success: false, error: formatError(error), results: [] }
@@ -429,6 +462,9 @@ const BEST_MODE: Record<ReportMetricField, 'max' | 'min' | 'latest'> = {
   top_speed: 'max',
   cmj_height_inches: 'max',
   weight_lbs: 'latest',
+  on_ice_top_speed: 'max',
+  on_ice_accel_max: 'max',
+  on_ice_15yd_time: 'min',
   cmj_peak_rel_prop_power: 'max',
   cmj_avg_rel_braking_force: 'max',
   cmj_avg_rel_prop_force: 'max',
@@ -451,9 +487,12 @@ export async function getGroupsMetricsReport(data: {
   endISO: string
   birthYearMin?: number | null
   birthYearMax?: number | null
+  athleteIds?: string[]
 }) {
   try {
-    if (data.groupIds.length === 0) return { success: false, error: 'Select at least one group.' }
+    if (data.groupIds.length === 0 && !data.athleteIds?.length) {
+      return { success: false, error: 'Select at least one group or athlete.' }
+    }
 
     const { data: groupRows, error: groupErr } = await supabaseAdmin
       .from('groups')
@@ -462,11 +501,34 @@ export async function getGroupsMetricsReport(data: {
     if (groupErr) return { success: false, error: formatError(groupErr) }
     const groups = (groupRows || []).map(toGroupRow).sort(compareGroups)
 
-    const { data: memberRows, error: memberErr } = await supabaseAdmin
+    const { data: groupMembers, error: memberErr } = await supabaseAdmin
       .from('athlete_groups')
       .select('athlete_id, group_id')
       .in('group_id', data.groupIds)
     if (memberErr) return { success: false, error: formatError(memberErr) }
+    const memberRows = [...(groupMembers || [])]
+
+    // Each hand-picked athlete becomes a one-person "group" (id `athlete:<id>`), so every
+    // section of the report compares them exactly the way it compares groups.
+    const pickedIds = data.athleteIds || []
+    if (pickedIds.length > 0) {
+      const [{ data: picked, error: pickErr }, locs] = await Promise.all([
+        supabaseAdmin.from('profiles').select('id, first_name, last_name, location_id').in('id', pickedIds),
+        locationNames(),
+      ])
+      if (pickErr) return { success: false, error: formatError(pickErr) }
+      for (const p of (picked || []).sort((a, b) => `${a.first_name} ${a.last_name}`.localeCompare(`${b.first_name} ${b.last_name}`))) {
+        const id = `athlete:${p.id}`
+        groups.push({
+          id,
+          name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+          locationId: p.location_id,
+          locationName: locs.get(p.location_id) || '',
+          birthYear: null,
+        })
+        memberRows.push({ athlete_id: p.id, group_id: id })
+      }
+    }
 
     const groupsByAthlete = new Map<string, string[]>()
     for (const r of memberRows || []) {

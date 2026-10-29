@@ -29,6 +29,7 @@ import {
 } from '@/app/components/metricInfo'
 import {
   listGroupsWithCounts,
+  listAthletesForCompare,
   getGroupsMetricsReport,
   GroupsMetricsReport,
   AthleteBest,
@@ -116,11 +117,14 @@ interface SectionDef {
   color: string
   decimals: number
   better: 'higher' | 'lower' | 'neutral'
+  // Only tested for some athletes (on-ice): hidden when the selection has no readings.
+  optional?: boolean
 }
 
 const CORE_SECTIONS: SectionDef[] = (Object.keys(METRIC_INFO) as MetricKey[]).map((key) => {
   const info = METRIC_INFO[key]
-  return { ...info, field: info.field as ReportMetricField, better: key === 'weight' ? 'neutral' : 'higher' }
+  const better = info.summaryMode === 'latest' ? 'neutral' : info.summaryMode === 'min' ? 'lower' : 'higher'
+  return { ...info, field: info.field as ReportMetricField, better }
 })
 const CMJ_SECTIONS: SectionDef[] = CMJ_DETAIL_FIELDS.map((field) => ({ field, ...CMJ_DETAIL_INFO[field] }))
 const SECTION_BY_FIELD = new Map([...CORE_SECTIONS, ...CMJ_SECTIONS].map((d) => [d.field, d]))
@@ -135,7 +139,14 @@ const SUMMARY_FIELDS: ReportMetricField[] = [
   'cmj_propulsive_phase_s',
   'iso_belt_squat_peak_force',
   'top_speed',
+  'on_ice_top_speed',
+  'on_ice_accel_max',
+  'on_ice_15yd_time',
 ]
+
+const hasSeries = (report: GroupsMetricsReport, def: SectionDef) => !def.optional || report.series[def.field].length > 0
+const summaryFields = (report: GroupsMetricsReport) =>
+  SUMMARY_FIELDS.filter((f) => hasSeries(report, SECTION_BY_FIELD.get(f)!))
 
 // Diverging pair with a neutral midpoint: braking and propulsive are the two poles of the
 // impulse ratio, balanced sits between.
@@ -167,10 +178,19 @@ function GroupMetricsReport() {
     () => (searchParams.get('ids') || '').split(',').filter(Boolean),
     [searchParams]
   )
+  // Individual athletes compared alongside (or instead of) groups -- each one is charted like
+  // a group of one.
+  const selectedAthleteIds = useMemo(
+    () => (searchParams.get('athletes') || '').split(',').filter(Boolean),
+    [searchParams]
+  )
 
   const [authorized, setAuthorized] = useState(false)
   const [allGroups, setAllGroups] = useState<GroupOption[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [allAthletes, setAllAthletes] = useState<GroupOption[]>([])
+  const [athletePickerOpen, setAthletePickerOpen] = useState(false)
+  const [athleteSearch, setAthleteSearch] = useState('')
   const [preset, setPreset] = useState<RangePreset>('90d')
   const [customStart, setCustomStart] = useState(presetRange('90d').start)
   const [customEnd, setCustomEnd] = useState(toISO(new Date()))
@@ -199,8 +219,9 @@ function GroupMetricsReport() {
         return
       }
       setAuthorized(true)
-      const res = await listGroupsWithCounts()
+      const [res, athletesRes] = await Promise.all([listGroupsWithCounts(), listAthletesForCompare()])
       if (res.success) setAllGroups(res.results.map((g) => ({ id: g.id, name: g.name, locationName: g.locationName })))
+      if (athletesRes.success) setAllAthletes(athletesRes.results)
     }
     init()
   }, [router])
@@ -209,14 +230,17 @@ function GroupMetricsReport() {
   // toggled, and a response for superseded inputs is dropped, so quick filter changes can't
   // paint an older report over a newer one.
   const idsKey = selectedIds.join(',')
-  const requestKey = `${idsKey}|${range.start}|${range.end}|${birthRange.min}|${birthRange.max}`
-  const loading = idsKey !== '' && loadedKey !== requestKey
+  const athletesKey = selectedAthleteIds.join(',')
+  const hasSelection = idsKey !== '' || athletesKey !== ''
+  const requestKey = `${idsKey}|${athletesKey}|${range.start}|${range.end}|${birthRange.min}|${birthRange.max}`
+  const loading = hasSelection && loadedKey !== requestKey
 
   useEffect(() => {
-    if (!authorized || !idsKey || !range.start || !range.end) return
+    if (!authorized || !hasSelection || !range.start || !range.end) return
     let cancelled = false
     getGroupsMetricsReport({
-      groupIds: idsKey.split(','),
+      groupIds: idsKey ? idsKey.split(',') : [],
+      athleteIds: athletesKey ? athletesKey.split(',') : [],
       startISO: range.start,
       endISO: range.end,
       birthYearMin: birthRange.min,
@@ -234,12 +258,24 @@ function GroupMetricsReport() {
     return () => {
       cancelled = true
     }
-  }, [authorized, idsKey, range.start, range.end, birthRange.min, birthRange.max, requestKey])
+  }, [authorized, hasSelection, idsKey, athletesKey, range.start, range.end, birthRange.min, birthRange.max, requestKey])
 
   // Selection lives in the URL so the page can be bookmarked/shared and survives a refresh.
+  function setSelection(groupIds: string[], athleteIds: string[]) {
+    const params = new URLSearchParams()
+    if (groupIds.length) params.set('ids', groupIds.join(','))
+    if (athleteIds.length) params.set('athletes', athleteIds.join(','))
+    const qs = params.toString().replace(/%2C/g, ',')
+    router.replace(`/coach/groups/metrics${qs ? `?${qs}` : ''}`)
+  }
   function toggleGroup(id: string) {
-    const next = selectedIds.includes(id) ? selectedIds.filter((g) => g !== id) : [...selectedIds, id]
-    router.replace(`/coach/groups/metrics${next.length ? `?ids=${next.join(',')}` : ''}`)
+    setSelection(selectedIds.includes(id) ? selectedIds.filter((g) => g !== id) : [...selectedIds, id], selectedAthleteIds)
+  }
+  function toggleAthlete(id: string) {
+    setSelection(
+      selectedIds,
+      selectedAthleteIds.includes(id) ? selectedAthleteIds.filter((a) => a !== id) : [...selectedAthleteIds, id]
+    )
   }
 
   if (!authorized) {
@@ -312,6 +348,51 @@ function GroupMetricsReport() {
                   </button>
                 )
               })}
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            onClick={() => setAthletePickerOpen((v) => !v)}
+            className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 hover:border-slate-700 transition"
+          >
+            <span className="font-medium">
+              {selectedAthleteIds.length === 0 ? 'Compare athletes' : `${selectedAthleteIds.length} athlete(s) selected`}
+            </span>
+            <ChevronDown className="w-4 h-4 text-slate-500" />
+          </button>
+          {athletePickerOpen && (
+            <div className="absolute left-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-2">
+              <input
+                autoFocus
+                value={athleteSearch}
+                onChange={(e) => setAthleteSearch(e.target.value)}
+                placeholder="Search athletes"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white"
+              />
+              <div className="max-h-72 overflow-y-auto space-y-0.5">
+                {allAthletes
+                  .filter(
+                    (a) =>
+                      selectedAthleteIds.includes(a.id) || a.name.toLowerCase().includes(athleteSearch.trim().toLowerCase())
+                  )
+                  .sort((a, b) => Number(selectedAthleteIds.includes(b.id)) - Number(selectedAthleteIds.includes(a.id)))
+                  .slice(0, 60)
+                  .map((a) => (
+                    <button
+                      key={a.id}
+                      onClick={() => toggleAthlete(a.id)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
+                    >
+                      <span>
+                        {a.name}
+                        {a.locationName && <span className="text-slate-500 font-normal"> · {a.locationName}</span>}
+                      </span>
+                      {selectedAthleteIds.includes(a.id) && <Check className="w-4 h-4 text-red-500" />}
+                    </button>
+                  ))}
+              </div>
             </div>
           )}
         </div>
@@ -411,21 +492,21 @@ function GroupMetricsReport() {
 
       {error && <div className="p-3 bg-red-950/60 border border-red-800 rounded-lg text-xs text-red-300">{error}</div>}
 
-      {selectedIds.length === 0 && (
+      {!hasSelection && (
         <div className="p-8 text-center text-slate-400 rounded-xl border border-slate-800 bg-slate-900">
-          Select one or more groups to see their metrics.
+          Select groups or athletes to see their metrics.
         </div>
       )}
 
-      {selectedIds.length > 0 && loading && !report && (
+      {hasSelection && loading && !report && (
         <div className="p-8 text-center text-slate-400">Loading group metrics...</div>
       )}
 
-      {report && selectedIds.length > 0 && (
+      {report && hasSelection && (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`}>
           <ProgramSummary report={report} groupColor={groupColor} />
           <JumpStrategySection report={report} groupColor={groupColor} />
-          {CORE_SECTIONS.map((def) => (
+          {CORE_SECTIONS.filter((def) => hasSeries(report, def)).map((def) => (
             <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
           ))}
           <h2 className="text-lg font-bold uppercase tracking-tight pt-2">CMJ force-plate detail</h2>
@@ -660,7 +741,7 @@ function ProgramSummary({
           <thead>
             <tr className="text-slate-400 text-left">
               <th className="font-semibold py-2 pr-3">Group</th>
-              {SUMMARY_FIELDS.map((f) => (
+              {summaryFields(report).map((f) => (
                 <th key={f} className="font-semibold py-2 px-2 text-right whitespace-nowrap">
                   {shortName(SECTION_BY_FIELD.get(f)!.name)}
                 </th>
@@ -676,7 +757,7 @@ function ProgramSummary({
                     {row.label}
                   </span>
                 </td>
-                {SUMMARY_FIELDS.map((f) => {
+                {summaryFields(report).map((f) => {
                   const cell = report.groupChange[f]?.[row.key]
                   if (!cell) {
                     return (

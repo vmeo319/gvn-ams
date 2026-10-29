@@ -4,13 +4,31 @@ export interface Metric {
   top_speed: number | null
   cmj_height_inches: number | null
   weight_lbs: number | null
+  on_ice_top_speed: number | null
+  on_ice_accel_max: number | null
+  on_ice_15yd_time: number | null
 }
 
-export type MetricKey = 'iso' | 'cmj' | 'top_speed' | 'weight'
+// Every performance_metrics column the metric dashboards read, for .select().
+export const METRIC_COLUMNS =
+  'test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs, on_ice_top_speed, on_ice_accel_max, on_ice_15yd_time'
 
+export type MetricKey = 'iso' | 'cmj' | 'top_speed' | 'weight' | 'on_ice_speed' | 'on_ice_accel' | 'on_ice_15yd'
+
+// summaryMode: the headline number on an athlete's chart card ('min' for times, where lower
+// is better). optional: only tested for some athletes, so the card is hidden when an athlete
+// has no readings instead of showing an empty chart.
 export const METRIC_INFO: Record<
   MetricKey,
-  { field: keyof Metric; name: string; unit: string; color: string; decimals: number; summaryMode: 'max' | 'latest' }
+  {
+    field: keyof Metric
+    name: string
+    unit: string
+    color: string
+    decimals: number
+    summaryMode: 'max' | 'min' | 'latest'
+    optional?: boolean
+  }
 > = {
   iso: { field: 'iso_belt_squat_peak_force', name: 'ISO Force (N/kg)', unit: 'N/kg', color: '#ef4444', decimals: 1, summaryMode: 'max' },
   cmj: { field: 'cmj_height_inches', name: 'Jump Height (in)', unit: 'in', color: '#3b82f6', decimals: 2, summaryMode: 'max' },
@@ -18,6 +36,20 @@ export const METRIC_INFO: Record<
   // A "best-ever" reading doesn't mean anything for bodyweight — the current value is what
   // matters, so its summary card shows the most recent entry instead of the max.
   weight: { field: 'weight_lbs', name: 'Weight (lbs)', unit: 'lbs', color: '#a855f7', decimals: 1, summaryMode: 'latest' },
+  // 1080 "On-Ice Sprint Profile" (2 kg resisted skating sprints).
+  on_ice_speed: { field: 'on_ice_top_speed', name: 'On-Ice Top Speed (mph)', unit: 'mph', color: '#06b6d4', decimals: 2, summaryMode: 'max', optional: true },
+  on_ice_accel: { field: 'on_ice_accel_max', name: 'On-Ice Max Acceleration (m/s²)', unit: 'm/s²', color: '#f59e0b', decimals: 2, summaryMode: 'max', optional: true },
+  on_ice_15yd: { field: 'on_ice_15yd_time', name: 'On-Ice 15yd Time (s)', unit: 's', color: '#ec4899', decimals: 2, summaryMode: 'min', optional: true },
+}
+
+export function hasMetricData(metrics: Metric[], key: MetricKey): boolean {
+  const field = METRIC_INFO[key].field
+  return metrics.some((m) => m[field] !== null && m[field] !== undefined)
+}
+
+// Metrics worth showing for an athlete: every core metric, plus optional ones they have data for.
+export function visibleMetricKeys(metrics: Metric[]): MetricKey[] {
+  return (Object.keys(METRIC_INFO) as MetricKey[]).filter((k) => !METRIC_INFO[k].optional || hasMetricData(metrics, k))
 }
 
 // CMJ force-plate detail (performance_metrics columns, all from the day's best-height jump).

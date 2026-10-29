@@ -7,7 +7,7 @@ import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Printer } from 'lucide-react'
 import MetricChartPanel from '@/app/components/MetricChartPanel'
-import { Metric, MetricKey, METRIC_INFO } from '@/app/components/metricInfo'
+import { Metric, MetricKey, METRIC_INFO, METRIC_COLUMNS, visibleMetricKeys } from '@/app/components/metricInfo'
 
 const ALL_METRIC_KEYS = Object.keys(METRIC_INFO) as MetricKey[]
 const CHARTS_PER_PAGE = 4
@@ -79,10 +79,13 @@ export default function AthleteReportCardPage() {
 
       const { data: metricRows } = await supabase
         .from('performance_metrics')
-        .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+        .select(METRIC_COLUMNS)
         .eq('athlete_id', athleteId)
         .order('test_date', { ascending: true })
-      setMetrics((metricRows || []) as Metric[])
+      const loadedMetrics = (metricRows || []) as Metric[]
+      setMetrics(loadedMetrics)
+      // On-ice and other optional metrics only start selected for athletes who have readings.
+      setSelectedMetrics(visibleMetricKeys(loadedMetrics))
 
       setLoading(false)
     }
@@ -143,7 +146,7 @@ export default function AthleteReportCardPage() {
 
       <div className="print:hidden p-4 rounded-xl border border-slate-800 bg-slate-900 flex flex-wrap items-center gap-x-6 gap-y-2">
         <span className="text-sm font-semibold text-slate-400">Metrics to include:</span>
-        {ALL_METRIC_KEYS.map((key) => (
+        {visibleMetricKeys(metrics).map((key) => (
           <label key={key} className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer select-none">
             <input
               type="checkbox"

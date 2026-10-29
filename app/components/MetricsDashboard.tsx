@@ -2,7 +2,7 @@
 
 import React from 'react'
 import MetricChartPanel from './MetricChartPanel'
-import { Metric, MetricKey, METRIC_INFO, formatTickDate } from './metricInfo'
+import { Metric, MetricKey, METRIC_INFO, formatTickDate, visibleMetricKeys } from './metricInfo'
 
 export type { Metric, MetricKey }
 export { METRIC_INFO, formatTickDate }
@@ -22,7 +22,7 @@ export default function MetricsDashboard({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {(Object.keys(METRIC_INFO) as MetricKey[]).map((key) => (
+      {visibleMetricKeys(metrics).map((key) => (
         <MetricChartPanel key={key} metricKey={key} metrics={metrics} athleteName={athleteName} />
       ))}
     </div>

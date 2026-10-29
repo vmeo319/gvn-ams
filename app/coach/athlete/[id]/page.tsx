@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { ArrowLeft, Copy, UserPlus, FileText } from 'lucide-react'
 import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
+import { METRIC_COLUMNS } from '@/app/components/metricInfo'
 import TrendBadge from '@/app/components/TrendBadge'
 import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
 import AthleteWorkoutPanel from '@/app/components/AthleteWorkoutPanel'
@@ -34,7 +35,7 @@ export default function CoachAthleteDetailPage() {
   async function loadMetrics() {
     const { data: metricRows } = await supabase
       .from('performance_metrics')
-      .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+      .select(METRIC_COLUMNS)
       .eq('athlete_id', athleteId)
       .order('test_date', { ascending: true })
     setMetrics((metricRows || []) as Metric[])

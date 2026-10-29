@@ -61,6 +61,79 @@ function isTenYardOffIceSprint(name: string) {
   return name.trim().toLowerCase() === "10yd off-ice sprint"
 }
 
+// "On-Ice Sprint Profile": 2 kg resisted skating sprints, run as 15-yard and 30-yard reps
+// since late 2025 (earlier sessions used 12/22/25 yards, which aren't comparable and are
+// skipped). Top speed comes from 30-yard reps only, since 15-yard reps end before top speed.
+function isOnIceSprintProfile(name: string) {
+  return name.trim().toLowerCase() === "on-ice sprint profile"
+}
+const FIFTEEN_YARD_METERS = 13.716
+const THIRTY_YARD_METERS = 27.432
+
+type OnIce = { topSpeedMph: number | null; accelMax: number | null; time15: number | null }
+
+async function onIceFromSession(sessionDetail: any, headers: Record<string, string>): Promise<OnIce | null> {
+  let topSpeedMps = 0
+  let accelMax = 0
+  let time15 = Infinity
+  let found = false
+  for (const ex of sessionDetail?.exercises || []) {
+    if (!isOnIceSprintProfile(ex?.exerciseTypeName || ex?.name || "")) continue
+    for (const setRef of ex?.sets || []) {
+      if (!setRef?.id) continue
+      const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=false`, { headers })
+      if (!setRes.ok) continue
+      const setData = await setRes.json()
+      for (const mg of setData?.motionGroups || []) {
+        for (const motion of mg?.motions || []) {
+          const loadKg = Number(motion?.resistanceValues?.concentricLoad)
+          const distance = Number(motion?.totalDistance)
+          if (isNaN(loadKg) || Math.abs(loadKg - 2) > LOAD_TOLERANCE_KG) continue
+          const is15 = Math.abs(distance - FIFTEEN_YARD_METERS) <= DISTANCE_TOLERANCE_M
+          const is30 = Math.abs(distance - THIRTY_YARD_METERS) <= DISTANCE_TOLERANCE_M
+          if (!is15 && !is30) continue
+          found = true
+          const speed = Number(motion?.topSpeed)
+          const accel = Number(motion?.accelDecelStats?.accelerationMax)
+          const time = Number(motion?.totalTime)
+          if (is30 && speed > topSpeedMps) topSpeedMps = speed
+          if (accel > accelMax) accelMax = accel
+          if (is15 && time > 0 && time < time15) time15 = time
+        }
+      }
+    }
+  }
+  if (!found) return null
+  return {
+    topSpeedMph: topSpeedMps > 0 ? Number((topSpeedMps * MPS_TO_MPH).toFixed(2)) : null,
+    accelMax: accelMax > 0 ? Number(accelMax.toFixed(2)) : null,
+    time15: isFinite(time15) ? Number(time15.toFixed(2)) : null,
+  }
+}
+
+// Best-of merge with whatever is already stored for that day (an athlete can have more than
+// one session on a date), so a later, slower session never overwrites a better reading.
+async function upsertOnIce(supabase: any, athleteId: string, testDate: string, v: OnIce) {
+  const { data: existing } = await supabase
+    .from('performance_metrics')
+    .select('on_ice_top_speed, on_ice_accel_max, on_ice_15yd_time')
+    .eq('athlete_id', athleteId)
+    .eq('test_date', testDate)
+    .maybeSingle()
+  const best = (a: number | null, b: number | null, pick: (x: number, y: number) => number) =>
+    a === null ? b : b === null ? a : pick(a, b)
+  return supabase.from('performance_metrics').upsert(
+    {
+      athlete_id: athleteId,
+      test_date: testDate,
+      on_ice_top_speed: best(v.topSpeedMph, existing?.on_ice_top_speed ?? null, Math.max),
+      on_ice_accel_max: best(v.accelMax, existing?.on_ice_accel_max ?? null, Math.max),
+      on_ice_15yd_time: best(v.time15, existing?.on_ice_15yd_time ?? null, Math.min),
+    },
+    { onConflict: 'athlete_id, test_date' }
+  )
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -88,6 +161,8 @@ Deno.serve(async (req) => {
     let offset = 0
     let body_athleteId = ''
     let body_testDate = ''
+    let nameContains = 'on-ice'
+    let body_athleteIds: string[] = []
 
     try {
       const body = await req.json()
@@ -95,6 +170,8 @@ Deno.serve(async (req) => {
       if (typeof body?.offset === 'number') offset = body.offset
       if (typeof body?.athleteId === 'string') body_athleteId = body.athleteId
       if (typeof body?.testDate === 'string') body_testDate = body.testDate
+      if (typeof body?.nameContains === 'string') nameContains = body.nameContains.toLowerCase()
+      if (Array.isArray(body?.athleteIds)) body_athleteIds = body.athleteIds.map(String)
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (typeof body?.batchSize === 'number') batchSize = body.batchSize
       if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
@@ -210,6 +287,173 @@ Deno.serve(async (req) => {
           newlyQueued: queuedCount,
           totalPendingInQueue: totalPending || 0,
         }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // ==========================================
+    // MODE: BACKFILL_ON_ICE — re-reads already-processed sessions for On-Ice Sprint Profile
+    // reps (process_batch only started recording them after those sessions were completed).
+    // Pass athleteIds to limit it to specific athletes; otherwise pages through every
+    // completed session with offset/batchSize.
+    // ==========================================
+    if (mode === "backfill_on_ice") {
+      let query = supabase
+        .from('ten80_sync_queue')
+        .select('session_id, athlete_id')
+        .eq('status', 'completed')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+      query = body_athleteIds.length
+        ? query.in('athlete_id', body_athleteIds)
+        : query.range(offset, offset + batchSize - 1)
+      const { data: rows, error: qErr } = await query
+      if (qErr) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Queue query failed: ${qErr.message}` }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        )
+      }
+
+      let written = 0
+      const errors: string[] = []
+      for (const row of rows || []) {
+        const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
+        if (!sessRes.ok) continue
+        const sessionDetail = await sessRes.json()
+        const testDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : null
+        if (!testDate) continue
+        const onIce = await onIceFromSession(sessionDetail, ten80Headers)
+        if (!onIce) continue
+        const { error } = await upsertOnIce(supabase, row.athlete_id, testDate, onIce)
+        if (error) errors.push(`${row.session_id}: ${error.message}`)
+        else written++
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          sessionsChecked: (rows || []).length,
+          onIceDaysWritten: written,
+          nextOffset: body_athleteIds.length ? null : offset + (rows || []).length,
+          errors: errors.slice(0, 10),
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // Diagnostic — tallies exercise names across a page of already-matched sessions, plus
+    // sample reps from any exercise whose name contains `nameContains`. Read-only; used to
+    // find what on-ice exercises are called before syncing them.
+    if (mode === "scan_exercise_names") {
+      const { data: rows } = await supabase
+        .from('ten80_sync_queue')
+        .select('session_id, athlete_id')
+        .eq('status', 'completed')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(offset, offset + batchSize - 1)
+
+      const nameCounts: Record<string, number> = {}
+      const matches: { athleteId: string; date: string; exercise: string; setId: string }[] = []
+      for (const row of rows || []) {
+        const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
+        if (!sessRes.ok) continue
+        const sessionDetail = await sessRes.json()
+        const date = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : ''
+        for (const ex of sessionDetail?.exercises || []) {
+          const exName = String(ex?.exerciseTypeName || ex?.name || '')
+          nameCounts[exName] = (nameCounts[exName] || 0) + 1
+          if (exName.toLowerCase().includes(nameContains)) {
+            for (const setRef of ex?.sets || []) {
+              if (setRef?.id) matches.push({ athleteId: row.athlete_id, date, exercise: exName, setId: String(setRef.id) })
+            }
+          }
+        }
+      }
+
+      // Rep-level detail for the first few matching sets, to see loads/distances/speeds.
+      const samples: any[] = []
+      for (const m of matches.slice(0, 4)) {
+        const setRes = await fetch(`${API_BASE}/TrainingData/Set/${m.setId}?includeSamples=false`, { headers: ten80Headers })
+        if (!setRes.ok) continue
+        const setData = await setRes.json()
+        const motions = (setData?.motionGroups || []).flatMap((mg: any) => mg?.motions || [])
+        samples.push({
+          ...m,
+          motions: motions.map((mo: any) => ({
+            load: mo?.resistanceValues?.concentricLoad,
+            topSpeed: mo?.topSpeed,
+            peakSpeed: mo?.peakValues?.speed,
+            distance: mo?.totalDistance,
+            time: mo?.totalTime,
+            keys: Object.keys(mo || {}),
+          })),
+        })
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          sessionsScanned: (rows || []).length,
+          nextOffset: offset + (rows || []).length,
+          nameCounts,
+          matchingSets: matches.length,
+          matchedAthletes: [...new Set(matches.map((m) => m.athleteId))],
+          matches: matches.map(({ athleteId, date, exercise }) => ({ athleteId, date, exercise })),
+          samples,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      )
+    }
+
+    // Diagnostic — every rep (with full speed/acceleration stats) from one athlete's
+    // exercises whose name contains `nameContains`, across all their matched sessions.
+    if (mode === "inspect_athlete_exercises") {
+      const { data: rows } = await supabase
+        .from('ten80_sync_queue')
+        .select('session_id')
+        .eq('athlete_id', body_athleteId)
+        .eq('status', 'completed')
+
+      const exerciseNames: Record<string, number> = {}
+      const sets: any[] = []
+      for (const row of rows || []) {
+        const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
+        if (!sessRes.ok) continue
+        const sessionDetail = await sessRes.json()
+        const date = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : ''
+        for (const ex of sessionDetail?.exercises || []) {
+          const exName = String(ex?.exerciseTypeName || ex?.name || '')
+          exerciseNames[exName] = (exerciseNames[exName] || 0) + 1
+          if (!exName.toLowerCase().includes(nameContains)) continue
+          for (const setRef of ex?.sets || []) {
+            if (!setRef?.id) continue
+            const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=false`, { headers: ten80Headers })
+            if (!setRes.ok) continue
+            const setData = await setRes.json()
+            const motions = (setData?.motionGroups || []).flatMap((mg: any) => mg?.motions || [])
+            sets.push({
+              date,
+              exercise: exName,
+              setId: setRef.id,
+              motions: motions.map((mo: any) => ({
+                load: mo?.resistanceValues?.concentricLoad,
+                topSpeed: mo?.topSpeed,
+                distance: mo?.totalDistance,
+                time: mo?.totalTime,
+                isEccentric: mo?.isEccentric,
+                peakValues: mo?.peakValues,
+                averageValues: mo?.averageValues,
+                accelDecelStats: mo?.accelDecelStats,
+              })),
+            })
+          }
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, athleteId: body_athleteId, sessions: (rows || []).length, exerciseNames, sets }, null, 1),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
     }
@@ -535,6 +779,13 @@ Deno.serve(async (req) => {
             } else {
               metricsWrittenCount++
             }
+          }
+
+          const onIce = await onIceFromSession(sessionDetail, ten80Headers)
+          if (onIce) {
+            const { error: onIceErr } = await upsertOnIce(supabase, item.athlete_id, testDate, onIce)
+            if (onIceErr) errors.push(`${item.session_id}: on-ice upsert failed - ${onIceErr.message}`)
+            else metricsWrittenCount++
           }
 
           await supabase.from('ten80_sync_queue').update({ status: 'completed' }).eq('id', item.id)

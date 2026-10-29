@@ -34,9 +34,13 @@ export default function MetricChartPanel({
   const summaryValue =
     info.summaryMode === 'latest'
       ? latestValue(metrics, info.field)
-      : metrics.length
-        ? Math.max(...metrics.map((m) => (m[info.field] as number) || 0))
-        : 0
+      : info.summaryMode === 'min'
+        ? chartData.length
+          ? Math.min(...chartData.map((d) => d.value))
+          : 0
+        : metrics.length
+          ? Math.max(...metrics.map((m) => (m[info.field] as number) || 0))
+          : 0
 
   function handleDownload() {
     const svg = chartRef.current?.querySelector('svg')

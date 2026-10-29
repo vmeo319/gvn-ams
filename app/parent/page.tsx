@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import { LogOut } from 'lucide-react'
 import MetricsDashboard, { Metric } from '@/app/components/MetricsDashboard'
+import { METRIC_COLUMNS } from '@/app/components/metricInfo'
 
 interface LinkedAthlete {
   id: string
@@ -74,7 +75,7 @@ export default function ParentPage() {
       setMetricsLoading(true)
       const { data } = await supabase
         .from('performance_metrics')
-        .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+        .select(METRIC_COLUMNS)
         .eq('athlete_id', selectedId)
         .order('test_date', { ascending: true })
       setMetrics((data || []) as Metric[])

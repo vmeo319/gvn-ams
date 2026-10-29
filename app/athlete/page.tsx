@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { LogOut, ArrowLeft } from 'lucide-react'
 import MetricsDashboard, { Metric } from '@/app/components/MetricsDashboard'
+import { METRIC_COLUMNS } from '@/app/components/metricInfo'
 import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
 import WeightEntryForm from '@/app/components/WeightEntryForm'
 
@@ -25,7 +26,7 @@ export default function AthletePage() {
   async function loadMetrics(athleteId: string) {
     const { data } = await supabase
       .from('performance_metrics')
-      .select('test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs')
+      .select(METRIC_COLUMNS)
       .eq('athlete_id', athleteId)
       .order('test_date', { ascending: true })
 
