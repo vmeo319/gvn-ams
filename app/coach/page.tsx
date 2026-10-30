@@ -12,11 +12,11 @@ import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatu
 import { listGroupsWithCounts, listAllAthleteGroups, listAllAthleteLocations } from './groups/actions'
 import GroupCell, { GroupOption } from './groups/GroupCell'
 
-// These 3 coaches only work out of North Shore day-to-day, so their dashboard defaults to it
-// even though their profiles list another (or only the GVN-Coaches placeholder) location.
-// Every other coach defaults to their own profile locations. Either way it's just a starting
-// default, changeable via the filter UI.
-const DEFAULT_NORTH_SHORE_EMAILS = ['ryanlajeuness@gmail.com', 'j.frey@gvn.com', 'vmeo319@gmail.com']
+// Vincent's profile sits on the GVN-Coaches placeholder (keeps his own test data off the
+// leaderboards), so his dashboard defaults to North Shore explicitly. Every other coach
+// defaults to their own profile locations. Either way it's just a starting default,
+// changeable via the filter UI.
+const DEFAULT_NORTH_SHORE_EMAILS = ['vmeo319@gmail.com']
 
 interface LeaderboardRecord {
   athlete_id: string
