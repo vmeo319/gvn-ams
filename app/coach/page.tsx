@@ -12,9 +12,10 @@ import { getWorkoutStatusColor, WORKOUT_STATUS_STYLES } from '@/lib/workoutStatu
 import { listGroupsWithCounts, listAllAthleteGroups, listAllAthleteLocations } from './groups/actions'
 import GroupCell, { GroupOption } from './groups/GroupCell'
 
-// These 3 coaches only work out of North Shore day-to-day, so default the dashboard's
-// location filter (and the levels columns, which North Shore actually uses) to that —
-// still just a starting default, changeable via the existing filter UI.
+// These 3 coaches only work out of North Shore day-to-day, so their dashboard defaults to it
+// even though their profiles list another (or only the GVN-Coaches placeholder) location.
+// Every other coach defaults to their own profile locations. Either way it's just a starting
+// default, changeable via the filter UI.
 const DEFAULT_NORTH_SHORE_EMAILS = ['ryanlajeuness@gmail.com', 'j.frey@gvn.com', 'vmeo319@gmail.com']
 
 interface LeaderboardRecord {
@@ -240,13 +241,26 @@ export default function CoachDashboard() {
     fetchGroups()
 
     supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (user?.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase())) {
-        setSelectedLocations(['GVN- North Shore'])
-        setShowLevels(true)
-      }
-      if (user) {
-        const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
-        setIsAdmin(profile?.role === 'admin')
+      if (!user) return
+      const [{ data: profile }, { data: extraLocations }, { data: allLocations }] = await Promise.all([
+        supabase.from('profiles').select('role, location_id').eq('id', user.id).single(),
+        supabase.from('athlete_locations').select('location_id').eq('profile_id', user.id),
+        supabase.from('locations').select('id, name'),
+      ])
+      setIsAdmin(profile?.role === 'admin')
+
+      // Default the location filter to the coach's own gyms: their profile location plus any
+      // extra locations set on the admin page (GVN-Coaches is a placeholder, not a gym).
+      const nameById = new Map((allLocations || []).map((l) => [l.id, l.name as string]))
+      const ownIds = [profile?.location_id, ...(extraLocations || []).map((r) => r.location_id)]
+      const ownNames = [...new Set(ownIds.map((id) => (id ? nameById.get(id) : undefined)))].filter(
+        (n): n is string => !!n && n.trim().toLowerCase() !== 'gvn-coaches'
+      )
+      const defaults =
+        user.email && DEFAULT_NORTH_SHORE_EMAILS.includes(user.email.toLowerCase()) ? ['GVN- North Shore'] : ownNames
+      if (defaults.length > 0) {
+        setSelectedLocations(defaults)
+        if (defaults.includes('GVN- North Shore')) setShowLevels(true)
       }
     })
   }, [])
