@@ -226,6 +226,17 @@ async function requireAdmin(): Promise<{ id: string } | { error: string }> {
   return { id: user.id }
 }
 
+// Supabase Auth reports a database-side failure as a bare 500 with an empty message;
+// turn that (and the common "email taken") case into something an admin can act on.
+function authErrorMessage(error: { message?: string; status?: number; code?: string }): string {
+  const msg = error.message && error.message !== '{}' ? error.message : ''
+  if (/already been registered|email_exists/i.test(`${msg} ${error.code || ''}`)) {
+    return 'Another account already uses that email.'
+  }
+  if (error.status === 500 || !msg) return 'The login server hit a database error and nothing was changed. Try again, or tell Vincent if it keeps happening.'
+  return msg
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD_LENGTH = 8
 
@@ -252,7 +263,7 @@ export async function setAccountLoginAction(data: { userId: string; email?: stri
         ...(email ? { email, email_confirm: true } : {}),
         ...(password ? { password } : {}),
       })
-      if (error) return { success: false, error: formatError(error) }
+      if (error) return { success: false, error: authErrorMessage(error) }
     } else {
       if (!email || !password) return { success: false, error: 'This account has no login yet — enter both an email and a password.' }
       const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
@@ -261,7 +272,7 @@ export async function setAccountLoginAction(data: { userId: string; email?: stri
         password,
         email_confirm: true,
       })
-      if (error) return { success: false, error: formatError(error) }
+      if (error) return { success: false, error: authErrorMessage(error) }
       // Never leave a login detached from its profile.
       if (created?.user && created.user.id !== data.userId) {
         await supabaseAdmin.auth.admin.deleteUser(created.user.id)
