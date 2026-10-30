@@ -1,7 +1,8 @@
 'use server'
 
 import { createClient } from '@supabase/supabase-js'
-import { headers } from 'next/headers'
+import { createServerClient } from '@supabase/ssr'
+import { cookies, headers } from 'next/headers'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -202,6 +203,130 @@ export async function updateProfileLocationsAction(data: { profileId: string; lo
     if (profileErr) return { success: false, error: formatError(profileErr) }
 
     return { success: true }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}
+
+// The signed-in admin, read from the request's session cookie. Login and delete actions
+// check this themselves rather than trusting an id sent from the browser: a Server Action
+// can be called directly, not only from the /admin page the proxy guards.
+async function requireAdmin(): Promise<{ id: string } | { error: string }> {
+  const cookieStore = await cookies()
+  const supabase = createServerClient(supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    cookies: {
+      getAll: () => cookieStore.getAll(),
+      setAll: () => {},
+    },
+  })
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not signed in.' }
+  const { data: profile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single()
+  if (profile?.role !== 'admin') return { error: 'Only an admin can do this.' }
+  return { id: user.id }
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const MIN_PASSWORD_LENGTH = 8
+
+// Sets the email (login username) and/or password on an existing account. Imported athletes
+// already have a login with a placeholder email (@gvn-placeholder.com) and a throwaway
+// password; this swaps in real ones. A profile with no login at all gets one created with
+// the profile's own id, so all of its existing data stays attached.
+export async function setAccountLoginAction(data: { userId: string; email?: string; password?: string }) {
+  try {
+    const admin = await requireAdmin()
+    if ('error' in admin) return { success: false, error: admin.error }
+
+    const email = data.email?.trim().toLowerCase() || ''
+    const password = data.password || ''
+    if (!email && !password) return { success: false, error: 'Enter a new email, a new password, or both.' }
+    if (email && !EMAIL_RE.test(email)) return { success: false, error: 'That email doesn’t look valid.' }
+    if (password && password.length < MIN_PASSWORD_LENGTH) {
+      return { success: false, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` }
+    }
+
+    const { data: existing } = await supabaseAdmin.auth.admin.getUserById(data.userId)
+    if (existing?.user) {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(data.userId, {
+        ...(email ? { email, email_confirm: true } : {}),
+        ...(password ? { password } : {}),
+      })
+      if (error) return { success: false, error: formatError(error) }
+    } else {
+      if (!email || !password) return { success: false, error: 'This account has no login yet — enter both an email and a password.' }
+      const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
+        id: data.userId,
+        email,
+        password,
+        email_confirm: true,
+      })
+      if (error) return { success: false, error: formatError(error) }
+      // Never leave a login detached from its profile.
+      if (created?.user && created.user.id !== data.userId) {
+        await supabaseAdmin.auth.admin.deleteUser(created.user.id)
+        return { success: false, error: 'Could not attach a login to this profile.' }
+      }
+    }
+
+    if (email) await supabaseAdmin.from('profiles').update({ email }).eq('id', data.userId)
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: formatError(err) }
+  }
+}
+
+// What deleting an account would take with it, shown before the admin confirms.
+export async function getAccountDataSummaryAction(data: { userId: string }) {
+  const admin = await requireAdmin()
+  if ('error' in admin) return { success: false, error: admin.error, testDays: 0, groups: 0, notes: 0, hasLogin: false, email: '' }
+  const count = async (table: string, col = 'athlete_id') => {
+    const { count: n } = await supabaseAdmin.from(table).select('*', { count: 'exact', head: true }).eq(col, data.userId)
+    return n || 0
+  }
+  const [testDays, groups, notes, authRes] = await Promise.all([
+    count('performance_metrics'),
+    count('athlete_groups'),
+    count('athlete_notes'),
+    supabaseAdmin.auth.admin.getUserById(data.userId),
+  ])
+  const email = authRes.data?.user?.email || ''
+  return { success: true, testDays, groups, notes, hasLogin: !!authRes.data?.user, email }
+}
+
+// Deletes an account. With mergeIntoId, everything the account owns (test results, groups,
+// notes, 1080 sessions...) first moves onto that account -- the way to clean up a duplicate.
+// Without it, the account's data is deleted with it.
+export async function deleteAccountAction(data: { userId: string; mergeIntoId?: string }) {
+  try {
+    const admin = await requireAdmin()
+    if ('error' in admin) return { success: false, error: admin.error }
+    if (data.userId === admin.id) return { success: false, error: 'You can’t delete your own account.' }
+
+    const { data: target } = await supabaseAdmin.from('profiles').select('role').eq('id', data.userId).single()
+    if (target?.role === 'admin') return { success: false, error: 'Admin accounts can’t be deleted here.' }
+
+    let merged: { moved: number; dropped: number } | null = null
+    if (data.mergeIntoId) {
+      const { data: result, error } = await supabaseAdmin.rpc('merge_profile_into', {
+        p_from: data.userId,
+        p_into: data.mergeIntoId,
+      })
+      if (error) return { success: false, error: `Merge failed, nothing was deleted: ${formatError(error)}` }
+      merged = result as { moved: number; dropped: number }
+    }
+
+    const { error: profileErr } = await supabaseAdmin.from('profiles').delete().eq('id', data.userId)
+    if (profileErr) return { success: false, error: formatError(profileErr) }
+
+    // Not every profile has a login (some came only from imported test data).
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(data.userId)
+    if (authUser?.user) {
+      const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(data.userId)
+      if (authErr) return { success: false, error: `Profile deleted, but its login could not be: ${formatError(authErr)}` }
+    }
+
+    return { success: true, merged }
   } catch (err: any) {
     return { success: false, error: formatError(err) }
   }

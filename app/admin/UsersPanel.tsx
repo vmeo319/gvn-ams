@@ -3,8 +3,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { Search, Copy, KeyRound, MapPin, Check, ChevronDown } from 'lucide-react'
+import { Search, Copy, KeyRound, MapPin, Check, ChevronDown, Pencil, Trash2 } from 'lucide-react'
 import { updateUserRoleAction, sendPasswordResetLinkAction, updateProfileLocationsAction } from './actions'
+import { EditLoginModal, DeleteAccountModal } from './AccountModals'
 
 interface ProfileRow {
   id: string
@@ -117,6 +118,8 @@ export default function UsersPanel({ selfId }: { selfId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [openLocationRowId, setOpenLocationRowId] = useState<string | null>(null)
   const [resetLink, setResetLink] = useState<{ name: string; link: string } | null>(null)
+  const [editingLogin, setEditingLogin] = useState<ProfileRow | null>(null)
+  const [deleting, setDeleting] = useState<ProfileRow | null>(null)
   const [error, setError] = useState('')
 
   async function load() {
@@ -290,15 +293,35 @@ export default function UsersPanel({ selfId }: { selfId: string }) {
                       </select>
                     </td>
                     <td className="py-3 px-4">
-                      <button
-                        onClick={() => handleResetPassword(p)}
-                        disabled={busyId === p.id}
-                        title="Generate a password reset link"
-                        className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition disabled:opacity-40"
-                      >
-                        <KeyRound className="w-3.5 h-3.5" />
-                        <span>Reset Password</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleResetPassword(p)}
+                          disabled={busyId === p.id}
+                          title="Generate a password reset link"
+                          className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition disabled:opacity-40 whitespace-nowrap"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>Reset Password</span>
+                        </button>
+                        <button
+                          onClick={() => setEditingLogin(p)}
+                          title="Set this account's login email and password"
+                          className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold px-3 py-1.5 rounded-lg transition whitespace-nowrap"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>Edit Login</span>
+                        </button>
+                        {p.id !== selfId && p.role !== 'admin' && (
+                          <button
+                            onClick={() => setDeleting(p)}
+                            title="Delete this account (or merge it into another)"
+                            aria-label="Delete account"
+                            className="flex items-center bg-slate-800 hover:bg-red-900/60 text-slate-400 hover:text-red-300 px-2 py-1.5 rounded-lg transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -307,6 +330,11 @@ export default function UsersPanel({ selfId }: { selfId: string }) {
           </table>
         </div>
       </div>
+
+      {editingLogin && <EditLoginModal account={editingLogin} onClose={() => setEditingLogin(null)} onSaved={load} />}
+      {deleting && (
+        <DeleteAccountModal account={deleting} allAccounts={profiles} onClose={() => setDeleting(null)} onDeleted={load} />
+      )}
     </div>
   )
 }
