@@ -325,6 +325,10 @@ const GROUP_METRIC_FIELDS = [
   'on_ice_top_speed',
   'on_ice_accel_max',
   'on_ice_15yd_time',
+  'sprint_top_speed',
+  'sprint_f0',
+  'sprint_v0',
+  'sprint_rfmax',
 ] as const
 
 export async function getGroupMetrics(data: { groupId: string }) {
@@ -465,6 +469,10 @@ const BEST_MODE: Record<ReportMetricField, 'max' | 'min' | 'latest'> = {
   on_ice_top_speed: 'max',
   on_ice_accel_max: 'max',
   on_ice_15yd_time: 'min',
+  sprint_top_speed: 'max',
+  sprint_f0: 'max',
+  sprint_v0: 'max',
+  sprint_rfmax: 'max',
   cmj_peak_rel_prop_power: 'max',
   cmj_avg_rel_braking_force: 'max',
   cmj_avg_rel_prop_force: 'max',

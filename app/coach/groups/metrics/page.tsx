@@ -109,6 +109,10 @@ const SUMMARY_FIELDS: ReportMetricField[] = [
   'on_ice_top_speed',
   'on_ice_accel_max',
   'on_ice_15yd_time',
+  'sprint_top_speed',
+  'sprint_f0',
+  'sprint_v0',
+  'sprint_rfmax',
 ]
 
 const hasSeries = (report: GroupsMetricsReport, def: SectionDef) => !def.optional || report.series[def.field].length > 0

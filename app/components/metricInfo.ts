@@ -7,13 +7,28 @@ export interface Metric {
   on_ice_top_speed: number | null
   on_ice_accel_max: number | null
   on_ice_15yd_time: number | null
+  sprint_top_speed: number | null
+  sprint_f0: number | null
+  sprint_v0: number | null
+  sprint_rfmax: number | null
 }
 
 // Every performance_metrics column the metric dashboards read, for .select().
 export const METRIC_COLUMNS =
-  'test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs, on_ice_top_speed, on_ice_accel_max, on_ice_15yd_time'
+  'test_date, iso_belt_squat_peak_force, top_speed, cmj_height_inches, weight_lbs, on_ice_top_speed, on_ice_accel_max, on_ice_15yd_time, sprint_top_speed, sprint_f0, sprint_v0, sprint_rfmax'
 
-export type MetricKey = 'iso' | 'cmj' | 'top_speed' | 'weight' | 'on_ice_speed' | 'on_ice_accel' | 'on_ice_15yd'
+export type MetricKey =
+  | 'iso'
+  | 'cmj'
+  | 'top_speed'
+  | 'weight'
+  | 'on_ice_speed'
+  | 'on_ice_accel'
+  | 'on_ice_15yd'
+  | 'sprint_speed'
+  | 'sprint_f0'
+  | 'sprint_v0'
+  | 'sprint_rfmax'
 
 // summaryMode: the headline number on an athlete's chart card ('min' for times, where lower
 // is better). optional: only tested for some athletes, so the card is hidden when an athlete
@@ -40,6 +55,34 @@ export const METRIC_INFO: Record<
   on_ice_speed: { field: 'on_ice_top_speed', name: 'On-Ice Top Speed (mph)', unit: 'mph', color: '#06b6d4', decimals: 2, summaryMode: 'max', optional: true },
   on_ice_accel: { field: 'on_ice_accel_max', name: 'On-Ice Max Acceleration (m/s²)', unit: 'm/s²', color: '#f59e0b', decimals: 2, summaryMode: 'max', optional: true },
   on_ice_15yd: { field: 'on_ice_15yd_time', name: 'On-Ice 15yd Time (s)', unit: 's', color: '#ec4899', decimals: 2, summaryMode: 'min', optional: true },
+  // 1080 "Off-Ice Sprint Profiling" (20yd at 2 kg): the fastest rep's speed and its
+  // force-velocity profile. The criteria the sprint-level decision tree uses.
+  sprint_speed: { field: 'sprint_top_speed', name: 'Sprint Profile Top Speed (mph)', unit: 'mph', color: '#14b8a6', decimals: 2, summaryMode: 'max', optional: true },
+  sprint_f0: { field: 'sprint_f0', name: 'Sprint F0 (N/kg)', unit: 'N/kg', color: '#f97316', decimals: 2, summaryMode: 'max', optional: true },
+  sprint_v0: { field: 'sprint_v0', name: 'Sprint V0 (mph)', unit: 'mph', color: '#8b5cf6', decimals: 2, summaryMode: 'max', optional: true },
+  sprint_rfmax: { field: 'sprint_rfmax', name: 'Sprint RFmax (%)', unit: '%', color: '#eab308', decimals: 1, summaryMode: 'max', optional: true },
+}
+
+// GVN's sprint-level decision tree, applied to one sprint profile. Each check that fails
+// stops at its prescription; passing all four means the profile is balanced.
+export const SPRINT_LEVEL_RULES = [
+  { label: 'RFmax > 50%', passes: (p: SprintProfileValues) => p.rfmax > 50, prescription: '60% vDec sled sprint × 5 yd' },
+  { label: 'RFmax > 53%', passes: (p: SprintProfileValues) => p.rfmax > 53, prescription: '50% vDec × 7–10 yd' },
+  { label: 'F0 > 8 N/kg', passes: (p: SprintProfileValues) => p.f0 > 8, prescription: '25% vDec × 10–15 yd' },
+  { label: 'V0 > 20 mph', passes: (p: SprintProfileValues) => p.v0 > 20, prescription: 'BW–10% vDec × 15+ yd' },
+] as const
+
+export interface SprintProfileValues {
+  rfmax: number
+  f0: number
+  v0: number
+}
+
+export function sprintPrescription(p: SprintProfileValues): { prescription: string; failedRule: string | null } {
+  for (const rule of SPRINT_LEVEL_RULES) {
+    if (!rule.passes(p)) return { prescription: rule.prescription, failedRule: rule.label }
+  }
+  return { prescription: 'Balanced', failedRule: null }
 }
 
 export function hasMetricData(metrics: Metric[], key: MetricKey): boolean {

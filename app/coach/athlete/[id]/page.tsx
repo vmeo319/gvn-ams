@@ -8,6 +8,7 @@ import { ArrowLeft, Copy, UserPlus, FileText } from 'lucide-react'
 import MetricsDashboard, { Metric, METRIC_INFO } from '@/app/components/MetricsDashboard'
 import { METRIC_COLUMNS } from '@/app/components/metricInfo'
 import TrendBadge from '@/app/components/TrendBadge'
+import SprintLevelCard from '@/app/components/SprintLevelCard'
 import AthleteNotesPanel from '@/app/components/AthleteNotesPanel'
 import AthleteWorkoutPanel from '@/app/components/AthleteWorkoutPanel'
 import WeeklyVolumeChart from '@/app/components/WeeklyVolumeChart'
@@ -190,6 +191,8 @@ export default function CoachAthleteDetailPage() {
           </>
         )}
       </div>
+
+      <SprintLevelCard metrics={metrics} />
 
       <AttendancePanel athleteId={athleteId} coachId={coachId!} />
 

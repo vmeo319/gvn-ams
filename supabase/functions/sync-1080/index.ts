@@ -134,6 +134,169 @@ async function upsertOnIce(supabase: any, athleteId: string, testDate: string, v
   )
 }
 
+// ---- Off-ice sprint force-velocity profile -------------------------------------------------
+// "Off-Ice Sprint Profiling": 20-yard sprints at 2 kg (some days also 10 kg / 20 kg reps, which
+// aren't used here). From the best 2 kg rep's speed samples this computes the horizontal
+// force-velocity profile (Samozino et al. 2016): fit v(t) = vmax * (1 - e^(-(t - t0)/tau)),
+// derive horizontal force per kg = acceleration + air drag + the 1080 cable's pull back, then
+// regress force on speed. F0 = force at zero speed, V0 = speed at zero force, Pmax = F0*V0/4,
+// RFmax = highest share of horizontal force in the total ground force after 0.3 s.
+function isOffIceSprintProfilingName(name: string) {
+  return name.trim().toLowerCase() === "off-ice sprint profiling"
+}
+const G = 9.81
+const DEFAULT_HEIGHT_M = 1.75
+const MIN_PROFILE_DISTANCE_M = 13 // 15+ yard reps; shorter ones end before the curve flattens
+
+type SprintProfile = { topSpeedMph: number; f0: number; v0Mph: number; rfmaxPct: number; pmax: number }
+
+// sampleData: little-endian float32 records of [time s, position m, speed m/s, accel m/s^2, force N].
+function decodeSamples(b64: string): { t: number; v: number }[] {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const view = new DataView(bytes.buffer)
+  const out: { t: number; v: number }[] = []
+  for (let off = 0; off + 20 <= bytes.length; off += 20) {
+    out.push({ t: view.getFloat32(off, true), v: view.getFloat32(off + 8, true) })
+  }
+  return out
+}
+
+// Least-squares fit of the speed curve up to peak speed. vmax has a closed form for a given
+// (t0, tau), so only those two are searched: a coarse grid, then a fine one around the best.
+function fitSpeedCurve(samples: { t: number; v: number }[]) {
+  let peak = 0
+  for (let i = 1; i < samples.length; i++) if (samples[i].v > samples[peak].v) peak = i
+  const pts = samples.slice(0, peak + 1)
+  const evaluate = (t0: number, tau: number) => {
+    let gv = 0, gg = 0
+    const g = pts.map((p) => (p.t > t0 ? 1 - Math.exp(-(p.t - t0) / tau) : 0))
+    for (let i = 0; i < pts.length; i++) { gv += pts[i].v * g[i]; gg += g[i] * g[i] }
+    if (gg === 0) return null
+    const vmax = gv / gg
+    let sse = 0
+    for (let i = 0; i < pts.length; i++) sse += (pts[i].v - vmax * g[i]) ** 2
+    return { sse, vmax, tau, t0 }
+  }
+  type Fit = { sse: number; vmax: number; tau: number; t0: number }
+  const search = (t0s: number[], taus: number[], start: Fit | null): Fit | null => {
+    let found = start
+    for (const t0 of t0s) for (const tau of taus) {
+      const r = evaluate(t0, tau)
+      if (r && (!found || r.sse < found.sse)) found = r
+    }
+    return found
+  }
+  const range = (from: number, to: number, step: number) => {
+    const out: number[] = []
+    for (let x = from; x <= to + 1e-9; x += step) out.push(Number(x.toFixed(4)))
+    return out
+  }
+  const coarse = search(range(-0.3, 0.5, 0.05), range(0.3, 3.0, 0.1), null)
+  if (!coarse) return null
+  return search(range(coarse.t0 - 0.05, coarse.t0 + 0.05, 0.01), range(Math.max(0.2, coarse.tau - 0.1), coarse.tau + 0.1, 0.01), coarse)
+}
+
+function forceVelocityProfile(samples: { t: number; v: number }[], massKg: number, heightM: number, loadKg: number) {
+  const fit = fitSpeedCurve(samples)
+  if (!fit || !(fit.vmax > 0) || !(fit.tau > 0)) return null
+  const { vmax, tau } = fit
+  const frontalArea = 0.2025 * heightM ** 0.725 * massKg ** 0.425 * 0.266
+  const dragK = 0.5 * 1.204 * frontalArea * 0.9
+  const vs: number[] = []
+  const fs: number[] = []
+  let rfMax = 0
+  for (let t = 0; t < 6 * tau; t += 0.01) {
+    const v = vmax * (1 - Math.exp(-t / tau))
+    const a = (vmax / tau) * Math.exp(-t / tau)
+    const f = massKg * a + dragK * v * v + loadKg * G
+    vs.push(v)
+    fs.push(f / massKg)
+    if (t >= 0.3) rfMax = Math.max(rfMax, f / Math.sqrt(f * f + (massKg * G) ** 2))
+  }
+  const n = vs.length
+  const mv = vs.reduce((x, y) => x + y, 0) / n
+  const mf = fs.reduce((x, y) => x + y, 0) / n
+  let sxy = 0, sxx = 0
+  for (let i = 0; i < n; i++) { sxy += (vs[i] - mv) * (fs[i] - mf); sxx += (vs[i] - mv) ** 2 }
+  const slope = sxy / sxx
+  const f0 = mf - slope * mv
+  const v0 = -f0 / slope
+  if (!(f0 > 0) || !(v0 > 0)) return null
+  return { f0, v0, rfMax, pmax: (f0 * v0) / 4 }
+}
+
+async function sprintProfileFromSession(
+  supabase: any,
+  athleteId: string,
+  sessionDetail: any,
+  headers: Record<string, string>
+): Promise<SprintProfile | null> {
+  // Best 2 kg rep of the day by top speed; its samples give the profile.
+  let best: { topSpeed: number; sampleData: string; load: number } | null = null
+  for (const ex of sessionDetail?.exercises || []) {
+    if (!isOffIceSprintProfilingName(ex?.exerciseTypeName || ex?.name || "")) continue
+    for (const setRef of ex?.sets || []) {
+      if (!setRef?.id) continue
+      const setRes = await fetch(`${API_BASE}/TrainingData/Set/${setRef.id}?includeSamples=true`, { headers })
+      if (!setRes.ok) continue
+      const setData = await setRes.json()
+      for (const mg of setData?.motionGroups || []) {
+        for (const motion of mg?.motions || []) {
+          const loadKg = Number(motion?.resistanceValues?.concentricLoad)
+          const topSpeed = Number(motion?.topSpeed)
+          if (isNaN(loadKg) || Math.abs(loadKg - 2) > LOAD_TOLERANCE_KG) continue
+          if (!(Number(motion?.totalDistance) >= MIN_PROFILE_DISTANCE_M) || !(topSpeed > 0) || !motion?.sampleData) continue
+          if (!best || topSpeed > best.topSpeed) best = { topSpeed, sampleData: motion.sampleData, load: loadKg }
+        }
+      }
+    }
+  }
+  if (!best) return null
+
+  // Body mass from the latest recorded weight; height only refines air drag.
+  const { data: profile } = await supabase.from('profiles').select('weight_lbs, height_inches').eq('id', athleteId).maybeSingle()
+  const massKg = Number(profile?.weight_lbs) > 0 ? Number(profile.weight_lbs) / 2.20462 : null
+  const heightM = Number(profile?.height_inches) > 0 ? Number(profile.height_inches) * 0.0254 : DEFAULT_HEIGHT_M
+  const topSpeedMph = Number((best.topSpeed * MPS_TO_MPH).toFixed(2))
+  if (!massKg) return { topSpeedMph, f0: NaN, v0Mph: NaN, rfmaxPct: NaN, pmax: NaN }
+
+  const fv = forceVelocityProfile(decodeSamples(best.sampleData), massKg, heightM, best.load)
+  if (!fv) return { topSpeedMph, f0: NaN, v0Mph: NaN, rfmaxPct: NaN, pmax: NaN }
+  return {
+    topSpeedMph,
+    f0: Number(fv.f0.toFixed(2)),
+    v0Mph: Number((fv.v0 * MPS_TO_MPH).toFixed(2)),
+    rfmaxPct: Number((fv.rfMax * 100).toFixed(1)),
+    pmax: Number(fv.pmax.toFixed(2)),
+  }
+}
+
+// A later session on the same day only replaces the profile if its sprint was faster.
+async function upsertSprintProfile(supabase: any, athleteId: string, testDate: string, p: SprintProfile) {
+  const { data: existing } = await supabase
+    .from('performance_metrics')
+    .select('sprint_top_speed')
+    .eq('athlete_id', athleteId)
+    .eq('test_date', testDate)
+    .maybeSingle()
+  if (existing?.sprint_top_speed && existing.sprint_top_speed > p.topSpeedMph) return { error: null }
+  const num = (x: number) => (isFinite(x) ? x : null)
+  return supabase.from('performance_metrics').upsert(
+    {
+      athlete_id: athleteId,
+      test_date: testDate,
+      sprint_top_speed: p.topSpeedMph,
+      sprint_f0: num(p.f0),
+      sprint_v0: num(p.v0Mph),
+      sprint_rfmax: num(p.rfmaxPct),
+      sprint_pmax: num(p.pmax),
+    },
+    { onConflict: 'athlete_id, test_date' }
+  )
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -163,6 +326,7 @@ Deno.serve(async (req) => {
     let body_testDate = ''
     let nameContains = 'on-ice'
     let body_athleteIds: string[] = []
+    let body_setId = ''
 
     try {
       const body = await req.json()
@@ -172,6 +336,7 @@ Deno.serve(async (req) => {
       if (typeof body?.testDate === 'string') body_testDate = body.testDate
       if (typeof body?.nameContains === 'string') nameContains = body.nameContains.toLowerCase()
       if (Array.isArray(body?.athleteIds)) body_athleteIds = body.athleteIds.map(String)
+      if (typeof body?.setId === 'string') body_setId = body.setId
       if (typeof body?.lookbackDays === 'number') lookbackDays = body.lookbackDays
       if (typeof body?.batchSize === 'number') batchSize = body.batchSize
       if (body?.triggeredBy === 'manual') triggeredBy = 'manual'
@@ -292,12 +457,12 @@ Deno.serve(async (req) => {
     }
 
     // ==========================================
-    // MODE: BACKFILL_ON_ICE — re-reads already-processed sessions for On-Ice Sprint Profile
-    // reps (process_batch only started recording them after those sessions were completed).
-    // Pass athleteIds to limit it to specific athletes; otherwise pages through every
-    // completed session with offset/batchSize.
+    // MODE: BACKFILL_PROFILES (alias BACKFILL_ON_ICE) — re-reads already-processed sessions
+    // for On-Ice Sprint Profile and Off-Ice Sprint Profiling reps (process_batch only started
+    // recording them after those sessions were completed). Pass athleteIds to limit it to
+    // specific athletes; otherwise pages through every completed session with offset/batchSize.
     // ==========================================
-    if (mode === "backfill_on_ice") {
+    if (mode === "backfill_profiles" || mode === "backfill_on_ice") {
       let query = supabase
         .from('ten80_sync_queue')
         .select('session_id, athlete_id')
@@ -316,6 +481,7 @@ Deno.serve(async (req) => {
       }
 
       let written = 0
+      let sprintWritten = 0
       const errors: string[] = []
       for (const row of rows || []) {
         const sessRes = await fetch(`${API_BASE}/Session/${row.session_id}`, { headers: ten80Headers })
@@ -324,10 +490,17 @@ Deno.serve(async (req) => {
         const testDate = sessionDetail?.created ? String(sessionDetail.created).split('T')[0] : null
         if (!testDate) continue
         const onIce = await onIceFromSession(sessionDetail, ten80Headers)
-        if (!onIce) continue
-        const { error } = await upsertOnIce(supabase, row.athlete_id, testDate, onIce)
-        if (error) errors.push(`${row.session_id}: ${error.message}`)
-        else written++
+        if (onIce) {
+          const { error } = await upsertOnIce(supabase, row.athlete_id, testDate, onIce)
+          if (error) errors.push(`${row.session_id}: ${error.message}`)
+          else written++
+        }
+        const sprint = await sprintProfileFromSession(supabase, row.athlete_id, sessionDetail, ten80Headers)
+        if (sprint) {
+          const { error } = await upsertSprintProfile(supabase, row.athlete_id, testDate, sprint)
+          if (error) errors.push(`${row.session_id}: ${error.message}`)
+          else sprintWritten++
+        }
       }
 
       return new Response(
@@ -335,6 +508,7 @@ Deno.serve(async (req) => {
           success: true,
           sessionsChecked: (rows || []).length,
           onIceDaysWritten: written,
+          sprintProfileDaysWritten: sprintWritten,
           nextOffset: body_athleteIds.length ? null : offset + (rows || []).length,
           errors: errors.slice(0, 10),
         }),
@@ -405,6 +579,23 @@ Deno.serve(async (req) => {
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
+    }
+
+    // Diagnostic — the raw structure of one set, with samples, so profile fields (F0, V0,
+    // RFmax...) can be located. Long arrays are cut to their first few entries.
+    if (mode === "inspect_set") {
+      const setRes = await fetch(`${API_BASE}/TrainingData/Set/${body_setId}?includeSamples=true`, { headers: ten80Headers })
+      const raw = setRes.ok ? await setRes.json() : { httpStatus: setRes.status }
+      const trim = (v: any): any =>
+        Array.isArray(v)
+          ? { length: v.length, first: v.slice(0, 3).map(trim) }
+          : v && typeof v === 'object'
+            ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, trim(x)]))
+            : v
+      return new Response(JSON.stringify({ success: setRes.ok, set: trim(raw) }, null, 1), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      })
     }
 
     // Diagnostic — every rep (with full speed/acceleration stats) from one athlete's
@@ -785,6 +976,13 @@ Deno.serve(async (req) => {
           if (onIce) {
             const { error: onIceErr } = await upsertOnIce(supabase, item.athlete_id, testDate, onIce)
             if (onIceErr) errors.push(`${item.session_id}: on-ice upsert failed - ${onIceErr.message}`)
+            else metricsWrittenCount++
+          }
+
+          const sprint = await sprintProfileFromSession(supabase, item.athlete_id, sessionDetail, ten80Headers)
+          if (sprint) {
+            const { error: sprintErr } = await upsertSprintProfile(supabase, item.athlete_id, testDate, sprint)
+            if (sprintErr) errors.push(`${item.session_id}: sprint profile upsert failed - ${sprintErr.message}`)
             else metricsWrittenCount++
           }
 
