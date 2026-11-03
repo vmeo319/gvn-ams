@@ -41,14 +41,12 @@ export default function AttendancePanel({ athleteId, coachId }: { athleteId: str
   }
 
   return (
-    <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-2">
+    <div className="px-4 py-2.5 rounded-xl border border-slate-800 bg-slate-900 space-y-2">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <CalendarDays className="w-5 h-5 text-slate-500 shrink-0" />
-          <div>
-            <div className="text-sm font-medium text-slate-400">Days Attended</div>
-            <div className="text-2xl font-bold text-white">{loading ? '--' : dates.length}</div>
-          </div>
+        <div className="flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-slate-500 shrink-0" />
+          <span className="text-sm font-medium text-slate-400">Days Attended</span>
+          <span className="text-lg font-bold text-white">{loading ? '--' : dates.length}</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <label className="text-xs text-slate-500" htmlFor="attendance-since">
@@ -79,14 +77,14 @@ export default function AttendancePanel({ athleteId, coachId }: { athleteId: str
         <>
           <AttendanceCalendar attendedDates={attendedSet} onDayClick={handleDayClick} pendingDate={pendingDate} />
           <p className="text-[11px] text-slate-500">
-            Click a day to mark it attended, click again to clear it — works even if this athlete isn't in a group.
+            Click a day to mark it attended, click again to clear it — works even if this athlete isn’t in a group.
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Counts a day once even if the athlete is in multiple groups. Useful as a billing reference — set “Since” to a
+            billing period’s start date, or leave blank for all-time.
           </p>
         </>
       )}
-      <p className="text-[11px] text-slate-500">
-        Counts a day once even if the athlete is in multiple groups. Useful as a billing reference — set "Since" to a
-        billing period's start date, or leave blank for all-time.
-      </p>
     </div>
   )
 }
