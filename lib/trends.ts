@@ -15,11 +15,17 @@ const WINDOW_DAYS = 90
 // Least-squares linear fit of value vs. days-since-first-point-in-window, normalized to a
 // percent change over the 90-day window. Same regression technique already used for the
 // V0-speed trend in app/coach/page.tsx, reused here for consistency.
-export function computeTrend(points: { date: string; value: number }[]): TrendResult {
+// With `range`, the fit uses only points inside it and percentChange90 is instead the change
+// across the span the points actually cover (first to last), so a past block such as a summer
+// can be judged on its own -- see TrendBadge's label.
+export function computeTrend(
+  points: { date: string; value: number }[],
+  range?: { start: string; end: string }
+): TrendResult {
   const now = Date.now()
   const cutoff = now - WINDOW_DAYS * 24 * 60 * 60 * 1000
   const windowed = points
-    .filter((p) => new Date(p.date).getTime() >= cutoff)
+    .filter((p) => (range ? p.date >= range.start && p.date <= range.end : new Date(p.date).getTime() >= cutoff))
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
   if (windowed.length < 2) {
@@ -41,7 +47,8 @@ export function computeTrend(points: { date: string; value: number }[]): TrendRe
   const intercept = (sumY - slope * sumX) / n
 
   const baseline = intercept > 0 ? intercept : sumY / n
-  const percentChange90 = baseline !== 0 ? (slope * WINDOW_DAYS) / baseline * 100 : 0
+  const spanDays = range ? xs[xs.length - 1] : WINDOW_DAYS
+  const percentChange90 = baseline !== 0 ? (slope * spanDays) / baseline * 100 : 0
 
   let classification: TrendClassification
   if (percentChange90 >= IMPROVING_THRESHOLD) classification = 'improving'

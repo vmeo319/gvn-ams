@@ -20,6 +20,7 @@ import { ArrowLeft, Check, ChevronDown, TrendingUp, TrendingDown, Trophy, Minus 
 import { supabase } from '@/lib/supabaseClient'
 import { RangePreset, presetRange, toISO } from '@/lib/dateRanges'
 import DateRangeFilter from '@/app/components/DateRangeFilter'
+import TrendBadge from '@/app/components/TrendBadge'
 import {
   METRIC_INFO,
   MetricKey,
@@ -115,6 +116,14 @@ const SUMMARY_FIELDS: ReportMetricField[] = [
   'sprint_rfmax',
 ]
 
+// Sections the report can show, picked from the Sections menu. Non-metric panels use these keys.
+const KPI_FIELDS: ReportMetricField[] = ['cmj_height_inches', 'top_speed', 'iso_belt_squat_peak_force']
+const DEFAULT_SECTIONS: string[] = ['program_summary', ...KPI_FIELDS]
+const PANEL_SECTIONS = [
+  { key: 'program_summary', label: 'Program summary table' },
+  { key: 'jump_strategy', label: 'Jump strategy (impulse ratio vs. forces)' },
+]
+
 const hasSeries = (report: GroupsMetricsReport, def: SectionDef) => !def.optional || report.series[def.field].length > 0
 const summaryFields = (report: GroupsMetricsReport) =>
   SUMMARY_FIELDS.filter((f) => hasSeries(report, SECTION_BY_FIELD.get(f)!))
@@ -169,6 +178,8 @@ function GroupMetricsReport() {
   const [customBirthMin, setCustomBirthMin] = useState('')
   const [customBirthMax, setCustomBirthMax] = useState('')
   const [report, setReport] = useState<GroupsMetricsReport | null>(null)
+  const [chosenSections, setChosenSections] = useState<string[]>(DEFAULT_SECTIONS)
+  const [sectionMenuOpen, setSectionMenuOpen] = useState(false)
   const [loadedKey, setLoadedKey] = useState('')
   const [error, setError] = useState('')
 
@@ -358,6 +369,15 @@ function GroupMetricsReport() {
           )}
         </div>
 
+        {report && (
+          <SectionPicker
+            report={report}
+            chosen={chosenSections}
+            setChosen={setChosenSections}
+            open={sectionMenuOpen}
+            setOpen={setSectionMenuOpen}
+          />
+        )}
         <DateRangeFilter
           preset={preset}
           onPreset={setPreset}
@@ -440,15 +460,14 @@ function GroupMetricsReport() {
 
       {report && hasSelection && (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`}>
-          <ProgramSummary report={report} groupColor={groupColor} />
-          <JumpStrategySection report={report} groupColor={groupColor} />
-          {CORE_SECTIONS.filter((def) => hasSeries(report, def)).map((def) => (
-            <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
-          ))}
-          <h2 className="text-lg font-bold uppercase tracking-tight pt-2">CMJ force-plate detail</h2>
-          {CMJ_SECTIONS.map((def) => (
-            <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
-          ))}
+          <GroupOverview report={report} range={range} />
+          {chosenSections.includes('program_summary') && <ProgramSummary report={report} groupColor={groupColor} />}
+          {chosenSections.includes('jump_strategy') && <JumpStrategySection report={report} groupColor={groupColor} />}
+          {[...CORE_SECTIONS, ...CMJ_SECTIONS]
+            .filter((def) => chosenSections.includes(def.field) && report.series[def.field].length > 0)
+            .map((def) => (
+              <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
+            ))}
         </div>
       )}
     </div>
@@ -891,6 +910,125 @@ function JumpStrategySection({
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+// Which panels and metric charts the report shows; only metrics the selection has data for are
+// offered.
+function SectionPicker({
+  report,
+  chosen,
+  setChosen,
+  open,
+  setOpen,
+}: {
+  report: GroupsMetricsReport
+  chosen: string[]
+  setChosen: (keys: string[]) => void
+  open: boolean
+  setOpen: (v: boolean) => void
+}) {
+  const metricOptions = [...CORE_SECTIONS, ...CMJ_SECTIONS]
+    .filter((def) => report.series[def.field].length > 0)
+    .map((def) => ({ key: def.field as string, label: def.name, color: def.color }))
+  const options = [...PANEL_SECTIONS.map((o) => ({ ...o, color: '#64748b' })), ...metricOptions]
+  const shownCount = options.filter((o) => chosen.includes(o.key)).length
+  const toggle = (key: string) => setChosen(chosen.includes(key) ? chosen.filter((k) => k !== key) : [...chosen, key])
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 hover:border-slate-700 transition"
+      >
+        <span className="font-medium">
+          Sections ({shownCount} of {options.length})
+        </span>
+        <ChevronDown className="w-4 h-4 text-slate-500" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 mt-2 w-80 max-h-96 overflow-y-auto bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-0.5">
+            {options.map((o, i) => (
+              <React.Fragment key={o.key}>
+                {i === PANEL_SECTIONS.length && <div className="border-t border-slate-800 my-1" />}
+                <button
+                  onClick={() => toggle(o.key)}
+                  className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
+                >
+                  <span className="flex items-center gap-2 text-left">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: o.color }} />
+                    {o.label}
+                  </span>
+                  {chosen.includes(o.key) && <Check className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+                </button>
+              </React.Fragment>
+            ))}
+            <div className="flex justify-between border-t border-slate-800 pt-1.5 mt-1 px-1">
+              <button onClick={() => setChosen(options.map((o) => o.key))} className="text-[11px] font-semibold text-slate-400 hover:text-white">
+                Show all
+              </button>
+              <button onClick={() => setChosen(DEFAULT_SECTIONS)} className="text-[11px] font-semibold text-slate-400 hover:text-white">
+                Reset to default
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Group-level trend for the three headline KPIs (same model as an athlete's trend cards, run on
+// the selection's weekly averages over the chosen range), plus who moved most within it.
+function GroupOverview({ report, range }: { report: GroupsMetricsReport; range: { start: string; end: string } }) {
+  const defs = KPI_FIELDS.map((f) => SECTION_BY_FIELD.get(f)!).filter((d) => report.series[d.field].length > 0)
+  if (defs.length === 0) return null
+  const pointsFor = (field: ReportMetricField) =>
+    report.series[field]
+      .filter((r) => typeof r.all === 'number')
+      .map((r) => ({ date: String(r.test_date), value: r.all as number }))
+  const who = report.groups.length > 1 ? 'all selected' : `${report.groups[0]?.name ?? 'group'}`
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-slate-500">
+        Group trend for {who} over the selected range — weekly average across athletes, same model as an athlete profile.
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {defs.map((def) => (
+          <TrendBadge key={def.field} metricName={def.name} metricColor={def.color} points={pointsFor(def.field)} range={range} />
+        ))}
+      </div>
+      <div className="p-4 rounded-xl border border-slate-800 bg-slate-900 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        {defs.map((def) => {
+          const changes = report.change[def.field]
+          const up = changes.filter((c) => c.pct > 0).slice(0, 2)
+          const down = changes.filter((c) => c.pct < 0).slice(-2).reverse()
+          const fmt = (c: AthleteChange) => (
+            <Link key={c.athleteId} href={`/coach/athlete/${c.athleteId}`} className="hover:underline">
+              {c.name} <span className="tabular-nums">({c.pct >= 0 ? '+' : ''}{c.pct.toFixed(1)}%)</span>
+            </Link>
+          )
+          return (
+            <div key={def.field} className="space-y-1">
+              <div className="font-semibold text-slate-300">{shortName(def.name)}</div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-emerald-400">
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span className="text-slate-500">Most improved:</span>
+                {up.length ? up.map(fmt).reduce<React.ReactNode[]>((acc, el, i) => (i ? [...acc, ', ', el] : [el]), []) : <span className="text-slate-500">—</span>}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-red-400">
+                <TrendingDown className="w-3.5 h-3.5" />
+                <span className="text-slate-500">Getting worse:</span>
+                {down.length ? down.map(fmt).reduce<React.ReactNode[]>((acc, el, i) => (i ? [...acc, ', ', el] : [el]), []) : <span className="text-slate-500">none</span>}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

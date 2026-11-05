@@ -17,14 +17,17 @@ export default function TrendBadge({
   metricColor,
   points,
   lowerIsBetter,
+  range,
 }: {
   metricName: string
   metricColor: string
   points: { date: string; value: number }[]
   // For times: a falling value is the improvement.
   lowerIsBetter?: boolean
+  // Judge the trend inside this date range (e.g. a past summer) instead of the last 90 days.
+  range?: { start: string; end: string }
 }) {
-  const trend = computeTrend(points)
+  const trend = computeTrend(points, range)
   const classification =
     lowerIsBetter && trend.classification === 'improving'
       ? 'declining'
@@ -35,8 +38,14 @@ export default function TrendBadge({
   const Icon = style.icon
 
   const sparklineData = points
-    .filter((p) => new Date(p.date).getTime() >= Date.now() - 90 * 24 * 60 * 60 * 1000)
+    .filter((p) =>
+      range ? p.date >= range.start && p.date <= range.end : new Date(p.date).getTime() >= Date.now() - 90 * 24 * 60 * 60 * 1000
+    )
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+  const spanWeeks =
+    sparklineData.length >= 2
+      ? Math.max(1, Math.round((new Date(sparklineData[sparklineData.length - 1].date).getTime() - new Date(sparklineData[0].date).getTime()) / (7 * 24 * 60 * 60 * 1000)))
+      : 0
 
   return (
     <div className={`p-4 rounded-xl border ${style.border} ${style.bg} flex items-center justify-between gap-3`}>
@@ -54,7 +63,7 @@ export default function TrendBadge({
         {trend.percentChange90 !== null && (
           <div className="text-xs text-slate-500 mt-0.5">
             {trend.percentChange90 >= 0 ? '+' : ''}
-            {trend.percentChange90.toFixed(1)}% / 90d
+            {trend.percentChange90.toFixed(1)}% {range ? `over ${spanWeeks} wk` : '/ 90d'}
           </div>
         )}
       </div>
