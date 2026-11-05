@@ -189,6 +189,7 @@ export default function CoachDashboard() {
   const [locationsByAthlete, setLocationsByAthlete] = useState<Record<string, string[]>>({})
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [groupDropdownOpen, setGroupDropdownOpen] = useState(false)
+  const [groupSearch, setGroupSearch] = useState('')
   const [openGroupCellId, setOpenGroupCellId] = useState<string | null>(null)
 
   // Modal States
@@ -1108,7 +1109,23 @@ export default function CoachDashboard() {
                 {filterableGroups.length === 0 && (
                   <div className="px-2 py-2 text-xs text-slate-500">No groups yet.</div>
                 )}
-                {filterableGroups.map((g) => {
+                {filterableGroups.length > 0 && (
+                  <input
+                    autoFocus
+                    value={groupSearch}
+                    onChange={(e) => setGroupSearch(e.target.value)}
+                    placeholder="Search groups"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white"
+                  />
+                )}
+                <div className="max-h-72 overflow-y-auto space-y-1">
+                {filterableGroups
+                  .filter(
+                    (g) =>
+                      selectedGroups.includes(g.id) ||
+                      `${g.name} ${g.locationName}`.toLowerCase().includes(groupSearch.trim().toLowerCase())
+                  )
+                  .map((g) => {
                   const isChecked = selectedGroups.includes(g.id)
                   return (
                     <button
@@ -1124,6 +1141,7 @@ export default function CoachDashboard() {
                     </button>
                   )
                 })}
+                </div>
                 {selectedGroups.length > 0 && (
                   <button
                     onClick={() => setSelectedGroups([])}

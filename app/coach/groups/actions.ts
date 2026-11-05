@@ -445,6 +445,9 @@ export interface GroupsMetricsReport {
   cmjPoints: CmjPoint[]
   // Athletes per jump strategy at their first and latest CMJ in range, for each group id and `all`.
   strategy: Record<string, { first: StrategyCounts; latest: StrategyCounts }>
+  // Metrics at least one athlete in the selection has ever been tested on, whatever the range,
+  // so the section menu can offer them even when the chosen dates hold none.
+  availableFields: ReportMetricField[]
 }
 
 export interface CmjPoint {
@@ -580,6 +583,22 @@ export async function getGroupsMetricsReport(data: {
       }
     }
 
+    // One cheap existence check per metric (any athlete, any date), chunked like the fetch above.
+    const keptIds = [...names.keys()]
+    const fieldHasData = async (field: ReportMetricField) => {
+      for (let i = 0; i < keptIds.length; i += 100) {
+        const { count } = await supabaseAdmin
+          .from('performance_metrics')
+          .select('athlete_id', { count: 'exact', head: true })
+          .in('athlete_id', keptIds.slice(i, i + 100))
+          .not(field, 'is', null)
+        if (count) return true
+      }
+      return false
+    }
+    const availability = await Promise.all(REPORT_METRIC_FIELDS.map(fieldHasData))
+    const availableFields = REPORT_METRIC_FIELDS.filter((_, i) => availability[i])
+
     const series = {} as GroupsMetricsReport['series']
     const best = {} as GroupsMetricsReport['best']
     const change = {} as GroupsMetricsReport['change']
@@ -713,6 +732,7 @@ export async function getGroupsMetricsReport(data: {
       groupChange,
       cmjPoints,
       strategy,
+      availableFields,
     }
     return { success: true, report }
   } catch (err: any) {

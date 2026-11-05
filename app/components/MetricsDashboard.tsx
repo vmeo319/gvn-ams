@@ -28,6 +28,7 @@ export default function MetricsDashboard({
   const [customEnd, setCustomEnd] = useState(toISO(new Date()))
   const [chosen, setChosen] = useState<MetricKey[]>(DEFAULT_METRICS)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuSearch, setMenuSearch] = useState('')
 
   if (loading) {
     return <div className="p-8 text-center text-slate-400">Loading performance profile...</div>
@@ -58,8 +59,17 @@ export default function MetricsDashboard({
             <>
               {/* Click-away layer so the menu closes like a normal dropdown. */}
               <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
-              <div className="absolute left-0 mt-2 w-72 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-0.5">
-                {available.map((key) => (
+              <div className="absolute left-0 mt-2 w-72 max-h-96 overflow-y-auto bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-0.5">
+                <input
+                  autoFocus
+                  value={menuSearch}
+                  onChange={(e) => setMenuSearch(e.target.value)}
+                  placeholder="Search metrics"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white mb-1"
+                />
+                {available
+                  .filter((key) => chosen.includes(key) || METRIC_INFO[key].name.toLowerCase().includes(menuSearch.trim().toLowerCase()))
+                  .map((key) => (
                   <button
                     key={key}
                     onClick={() => toggle(key)}

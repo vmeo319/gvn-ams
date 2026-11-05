@@ -136,6 +136,9 @@ const STRATEGY_STYLE: Record<JumpStrategy, { label: string; color: string; range
   propulsive: { label: 'Propulsive', color: '#3987e5', range: `> ${IMPULSE_RATIO_CUTOFFS.propulsive}` },
 }
 
+// Case-insensitive "contains" for the dropdown search boxes; an empty query matches everything.
+const matches = (text: string, query: string) => text.toLowerCase().includes(query.trim().toLowerCase())
+
 const shortName = (name: string) => name.replace(/ \(.*\)$/, '')
 
 const groupRows = (report: GroupsMetricsReport, groupColor: (groupId: string) => string | null) => [
@@ -168,6 +171,7 @@ function GroupMetricsReport() {
   const [authorized, setAuthorized] = useState(false)
   const [allGroups, setAllGroups] = useState<GroupOption[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [groupSearch, setGroupSearch] = useState('')
   const [allAthletes, setAllAthletes] = useState<GroupOption[]>([])
   const [athletePickerOpen, setAthletePickerOpen] = useState(false)
   const [athleteSearch, setAthleteSearch] = useState('')
@@ -304,7 +308,16 @@ function GroupMetricsReport() {
           </button>
           {pickerOpen && (
             <div className="absolute left-0 mt-2 w-72 max-h-80 overflow-y-auto bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-0.5">
-              {allGroups.map((g) => {
+              <input
+                autoFocus
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+                placeholder="Search groups"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white mb-1"
+              />
+              {allGroups
+                .filter((g) => selectedIds.includes(g.id) || matches(`${g.name} ${g.locationName}`, groupSearch))
+                .map((g) => {
                 const checked = selectedIds.includes(g.id)
                 return (
                   <button
@@ -464,7 +477,7 @@ function GroupMetricsReport() {
           {chosenSections.includes('program_summary') && <ProgramSummary report={report} groupColor={groupColor} />}
           {chosenSections.includes('jump_strategy') && <JumpStrategySection report={report} groupColor={groupColor} />}
           {[...CORE_SECTIONS, ...CMJ_SECTIONS]
-            .filter((def) => chosenSections.includes(def.field) && report.series[def.field].length > 0)
+            .filter((def) => chosenSections.includes(def.field) && report.availableFields.includes(def.field))
             .map((def) => (
               <MetricSection key={def.field} def={def} report={report} groupColor={groupColor} />
             ))}
@@ -958,10 +971,12 @@ function SectionPicker({
   setOpen: (v: boolean) => void
 }) {
   const metricOptions = [...CORE_SECTIONS, ...CMJ_SECTIONS]
-    .filter((def) => report.series[def.field].length > 0)
+    .filter((def) => report.availableFields.includes(def.field))
     .map((def) => ({ key: def.field as string, label: def.name, color: def.color }))
   const options = [...PANEL_SECTIONS.map((o) => ({ ...o, color: '#64748b' })), ...metricOptions]
   const shownCount = options.filter((o) => chosen.includes(o.key)).length
+  const [search, setSearch] = useState('')
+  const listed = options.filter((o) => chosen.includes(o.key) || matches(o.label, search))
   const toggle = (key: string) => setChosen(chosen.includes(key) ? chosen.filter((k) => k !== key) : [...chosen, key])
 
   return (
@@ -979,9 +994,15 @@ function SectionPicker({
         <>
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <div className="absolute left-0 mt-2 w-80 max-h-96 overflow-y-auto bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 z-30 space-y-0.5">
-            {options.map((o, i) => (
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search metrics"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white mb-1"
+            />
+            {listed.map((o) => (
               <React.Fragment key={o.key}>
-                {i === PANEL_SECTIONS.length && <div className="border-t border-slate-800 my-1" />}
                 <button
                   onClick={() => toggle(o.key)}
                   className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
