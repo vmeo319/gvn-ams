@@ -1,10 +1,12 @@
 'use client'
 
-import React, { useMemo, useRef } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import { Download } from 'lucide-react'
 import { Metric, MetricKey, METRIC_INFO, formatTickDate } from './metricInfo'
 import { downloadSvgAsPng } from '@/lib/downloadChartPng'
+
+const MPH_PER_MPS = 2.23694
 
 function latestValue(metrics: Metric[], field: keyof Metric): number {
   const withValue = metrics.filter((m) => m[field] !== null && m[field] !== undefined)
@@ -24,12 +26,19 @@ export default function MetricChartPanel({
 }) {
   const info = METRIC_INFO[metricKey]
   const chartRef = useRef<HTMLDivElement>(null)
+  // Speeds are stored in mph; 1080 and the research literature use m/s, so speed charts can
+  // flip between the two.
+  const isSpeed = info.unit === 'mph'
+  const [useMps, setUseMps] = useState(false)
+  const scale = isSpeed && useMps ? 1 / MPH_PER_MPS : 1
+  const unit = isSpeed && useMps ? 'm/s' : info.unit
+  const title = isSpeed && useMps ? info.name.replace('(mph)', '(m/s)') : info.name
 
   const chartData = useMemo(() => {
     return metrics
       .filter((m) => m[info.field] !== null && m[info.field] !== undefined)
-      .map((m) => ({ test_date: m.test_date, value: m[info.field] as number }))
-  }, [metrics, info.field])
+      .map((m) => ({ test_date: m.test_date, value: Number(((m[info.field] as number) * scale).toFixed(3)) }))
+  }, [metrics, info.field, scale])
 
   // Label ticks with the year when the points cover more than one, so "Oct 30" (last year)
   // followed by "Jul 27" (this year) doesn't read as time running backwards.
@@ -38,13 +47,13 @@ export default function MetricChartPanel({
 
   const summaryValue =
     info.summaryMode === 'latest'
-      ? latestValue(metrics, info.field)
+      ? latestValue(metrics, info.field) * scale
       : info.summaryMode === 'min'
         ? chartData.length
           ? Math.min(...chartData.map((d) => d.value))
           : 0
         : metrics.length
-          ? Math.max(...metrics.map((m) => (m[info.field] as number) || 0))
+          ? Math.max(...metrics.map((m) => (m[info.field] as number) || 0)) * scale
           : 0
 
   function handleDownload() {
@@ -54,7 +63,7 @@ export default function MetricChartPanel({
     // character on most OSes — sanitize just that, keep the rest human-readable.
     const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '-')
     const prefix = athleteName ? `Performance Report Card - ${sanitize(athleteName)}` : 'Performance Report Card'
-    downloadSvgAsPng(svg, `${prefix} - ${sanitize(info.name)}.png`)
+    downloadSvgAsPng(svg, `${prefix} - ${sanitize(title)}.png`)
   }
 
   return (
@@ -65,18 +74,35 @@ export default function MetricChartPanel({
     <div className="p-5 rounded-xl border border-slate-800 bg-slate-900 space-y-3 overflow-hidden">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-medium text-slate-400">{info.name}</div>
+          <div className="text-sm font-medium text-slate-400">{title}</div>
           <div className="text-2xl font-bold mt-0.5" style={{ color: info.color }}>
-            {summaryValue > 0 ? `${summaryValue.toFixed(info.decimals)} ${info.unit}` : '--'}
+            {summaryValue > 0 ? `${summaryValue.toFixed(info.decimals)} ${unit}` : '--'}
           </div>
         </div>
-        <button
-          onClick={handleDownload}
-          title="Download as PNG"
-          className="print:hidden p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
-        >
-          <Download className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {isSpeed && (
+            <div className="print:hidden flex rounded-lg bg-slate-800 p-0.5 text-[11px] font-semibold">
+              {(['mph', 'm/s'] as const).map((u) => (
+                <button
+                  key={u}
+                  onClick={() => setUseMps(u === 'm/s')}
+                  className={`px-2 py-1 rounded-md transition ${
+                    (u === 'm/s') === useMps ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            onClick={handleDownload}
+            title="Download as PNG"
+            className="print:hidden p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        </div>
       </div>
       <div ref={chartRef} className="h-56 w-full overflow-hidden">
         <ResponsiveContainer width="100%" height="100%">
@@ -103,7 +129,7 @@ export default function MetricChartPanel({
             <Line
               type="monotone"
               dataKey="value"
-              name={info.name}
+              name={title}
               stroke={info.color}
               strokeWidth={2.5}
               dot={{ r: 4 }}

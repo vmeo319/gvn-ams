@@ -59,7 +59,7 @@ export const METRIC_INFO: Record<
   // force-velocity profile. The criteria the sprint-level decision tree uses.
   sprint_speed: { field: 'sprint_top_speed', name: 'Sprint Profile Top Speed (mph)', unit: 'mph', color: '#14b8a6', decimals: 2, summaryMode: 'max', optional: true },
   sprint_f0: { field: 'sprint_f0', name: 'Sprint F0 (N/kg)', unit: 'N/kg', color: '#f97316', decimals: 2, summaryMode: 'max', optional: true },
-  sprint_v0: { field: 'sprint_v0', name: 'Sprint V0 (mph)', unit: 'mph', color: '#8b5cf6', decimals: 2, summaryMode: 'max', optional: true },
+  sprint_v0: { field: 'sprint_v0', name: 'Sprint V0 — Theoretical Max Velocity (mph)', unit: 'mph', color: '#8b5cf6', decimals: 2, summaryMode: 'max', optional: true },
   sprint_rfmax: { field: 'sprint_rfmax', name: 'Sprint RFmax (%)', unit: '%', color: '#eab308', decimals: 1, summaryMode: 'max', optional: true },
 }
 
