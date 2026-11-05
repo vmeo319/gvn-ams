@@ -474,8 +474,10 @@ function GroupMetricsReport() {
   )
 }
 
+const MPH_PER_MPS = 2.23694
+
 function MetricSection({
-  def: info,
+  def,
   report,
   groupColor,
 }: {
@@ -483,10 +485,20 @@ function MetricSection({
   report: GroupsMetricsReport
   groupColor: (groupId: string) => string | null
 }) {
+  // Speeds are stored in mph; speed sections can flip the whole panel to m/s.
+  const isSpeed = def.unit === 'mph'
+  const [useMps, setUseMps] = useState(false)
+  const k = isSpeed && useMps ? 1 / MPH_PER_MPS : 1
+  const info = isSpeed && useMps ? { ...def, unit: 'm/s', name: def.name.replace('(mph)', '(m/s)') } : def
   const field = info.field
-  const data = report.series[field]
-  const best = report.best[field]
-  const change = report.change[field]
+  const data =
+    k === 1
+      ? report.series[field]
+      : report.series[field].map((r) =>
+          Object.fromEntries(Object.entries(r).map(([key, v]) => [key, typeof v === 'number' ? v * k : v]))
+        )
+  const best = report.best[field].map((b) => ({ ...b, value: b.value * k }))
+  const change = report.change[field].map((c) => ({ ...c, first: c.first * k, compare: c.compare * k }))
   const neutral = info.better === 'neutral'
   const unitSuffix = info.unit ? ` ${info.unit}` : ''
   const multi = report.groups.length > 1
@@ -504,6 +516,21 @@ function MetricSection({
             <span className="text-xs font-normal text-slate-500 ml-2">latest week</span>
           </div>
         </div>
+        {isSpeed && (
+          <div className="flex rounded-lg bg-slate-800 p-0.5 text-[11px] font-semibold">
+            {(['mph', 'm/s'] as const).map((u) => (
+              <button
+                key={u}
+                onClick={() => setUseMps(u === 'm/s')}
+                className={`px-2 py-1 rounded-md transition ${
+                  (u === 'm/s') === useMps ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                {u}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-5">
